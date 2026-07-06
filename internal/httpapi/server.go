@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mahiro424/cbs/internal/config"
+	protocolpkg "github.com/mahiro424/cbs/internal/protocol"
 	"github.com/mahiro424/cbs/internal/storage"
 )
 
@@ -151,13 +152,17 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		deviceType = "ipad"
 	}
 	cacheKey := "login:mock:" + uuid
-	protocol := map[string]any{
-		"pack_kind":      "hybrid_ecdh_ios_placeholder",
-		"platform":       "ios",
-		"login_kind":     "getqr_mock",
-		"payload_sha256": hex.EncodeToString(sum[:]),
-		"input_length":   len(seed),
+	hybrid, _, err := protocolpkg.HybridECDHPackIOS(protocolpkg.HybridRequest{
+		Operation: "Login.GetQR",
+		Payload:   []byte(seed),
+		DeviceID:  deviceID,
+		LoginKind: "getqr_mock",
+	})
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+		return
 	}
+	protocol := protocolTraceFromHybrid(hybrid, "getqr_mock")
 	mockResponse := map[string]any{
 		"uuid":      uuid,
 		"qr_url":    "mock://login/" + uuid,
@@ -335,7 +340,7 @@ func (s *Server) handleLoginData62(w http.ResponseWriter, r *http.Request, reque
 		Wxid:       wxid,
 		Data62:     req.Data62,
 		LoginKind:  "data62_mock",
-		PackKind:   "hybrid_ecdh_ios_placeholder",
+		Operation:  "Login.62data",
 		Platform:   "ios",
 		Payload:    req.Data62,
 		MockResponse: map[string]any{
@@ -400,7 +405,7 @@ func (s *Server) handleLoginA16Data(w http.ResponseWriter, r *http.Request, requ
 		Wxid:       wxid,
 		A16:        req.A16,
 		LoginKind:  "a16_mock",
-		PackKind:   "hybrid_ecdh_android_placeholder",
+		Operation:  "Login.A16Data",
 		Platform:   "android",
 		Payload:    req.A16,
 		MockResponse: map[string]any{
@@ -430,7 +435,7 @@ type mockLoginSpec struct {
 	Data62         string
 	A16            string
 	LoginKind      string
-	PackKind       string
+	Operation      string
 	Platform       string
 	Payload        string
 	MockResponse   map[string]any
@@ -444,16 +449,24 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		seed = spec.LoginKind + "|anonymous-device"
 	}
 	sum := sha256.Sum256([]byte(seed))
-	payloadSum := sha256.Sum256([]byte(spec.Payload))
 	uuid := "mock-" + hex.EncodeToString(sum[:])[:24]
 	cacheKey := "login:mock:" + uuid
-	protocol := map[string]any{
-		"pack_kind":      spec.PackKind,
-		"platform":       spec.Platform,
-		"login_kind":     spec.LoginKind,
-		"payload_sha256": hex.EncodeToString(payloadSum[:]),
-		"input_length":   len(spec.Payload),
+	operation := strings.TrimSpace(spec.Operation)
+	if operation == "" {
+		operation = spec.LoginKind
 	}
+	hybrid, _, err := protocolpkg.HybridECDHPack(protocolpkg.HybridRequest{
+		Platform:  spec.Platform,
+		Operation: operation,
+		Payload:   []byte(spec.Payload),
+		DeviceID:  spec.DeviceID,
+		LoginKind: spec.LoginKind,
+	})
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	protocol := protocolTraceFromHybrid(hybrid, spec.LoginKind)
 	mockResponse := map[string]any{
 		"uuid":      uuid,
 		"cache_key": cacheKey,
@@ -509,6 +522,20 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		data[key] = value
 	}
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
+}
+
+func protocolTraceFromHybrid(hybrid protocolpkg.HybridPacket, loginKind string) map[string]any {
+	return map[string]any{
+		"pack_kind":      hybrid.PackKind,
+		"platform":       hybrid.Platform,
+		"login_kind":     loginKind,
+		"operation":      hybrid.Operation,
+		"payload_sha256": hybrid.PayloadSHA256,
+		"payload_length": hybrid.PayloadLength,
+		"input_length":   hybrid.PayloadLength,
+		"packed_hex":     hybrid.PackedHex,
+		"debug":          hybrid.Debug,
+	}
 }
 
 func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requestID string) {

@@ -33,6 +33,13 @@ func TestLoginGetQRPersistsStateAndSampleThenCacheInfoCanReadIt(t *testing.T) {
 	if protocol["pack_kind"] != "hybrid_ecdh_ios_placeholder" {
 		t.Fatalf("protocol.pack_kind = %v，期望 hybrid_ecdh_ios_placeholder", protocol["pack_kind"])
 	}
+	if mustString(t, protocol, "packed_hex") == "" {
+		t.Fatalf("protocol.packed_hex 不能为空：%+v", protocol)
+	}
+	debug := mustMap(t, protocol["debug"])
+	if debug["magic"] != "CBS1" || debug["payload_length"] == nil {
+		t.Fatalf("protocol.debug = %+v，期望包含 CBS1 mock 帧摘要", debug)
+	}
 	loginState := mustMap(t, data["login_state"])
 	if loginState["cache_key"] != cacheKey || loginState["uuid"] != uuid {
 		t.Fatalf("login_state = %+v，期望包含本次 uuid/cache_key", loginState)
@@ -148,6 +155,13 @@ func TestLoginData62AndA16MockPathsPersistStateAndSamples(t *testing.T) {
 			protocol := mustMap(t, data["protocol"])
 			if protocol["pack_kind"] != tc.packKind || protocol["platform"] != tc.platform || protocol["login_kind"] != tc.loginKind {
 				t.Fatalf("protocol = %+v，期望 pack/platform/login kind 匹配", protocol)
+			}
+			if mustString(t, protocol, "packed_hex") == "" {
+				t.Fatalf("protocol.packed_hex 不能为空：%+v", protocol)
+			}
+			debug := mustMap(t, protocol["debug"])
+			if debug["magic"] != "CBS1" || debug["payload_length"] == nil {
+				t.Fatalf("protocol.debug = %+v，期望包含 CBS1 mock 帧摘要", debug)
 			}
 			loginState := mustMap(t, data["login_state"])
 			if loginState["uuid"] != uuid || loginState["cache_key"] != cacheKey || loginState["login_kind"] != tc.loginKind {
