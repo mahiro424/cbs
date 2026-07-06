@@ -169,6 +169,10 @@ func (s *Server) writeLoginServiceError(w http.ResponseWriter, requestID string,
 		s.writeNetworkError(w, requestID, err)
 	case errors.Is(err, loginpkg.ErrLoginStateNotFound):
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到二维码登录态", RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrWxidLoginStateNotFound):
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrSessionLoggedOut):
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrUnsupportedLoginKind):
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrProtocolPack):
@@ -286,74 +290,14 @@ func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
-	if err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
-	if !ok {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
-		return
-	}
-	now := time.Now().UTC()
-	state.SessionState = "initialized"
-	state.LastInitAt = now
 	maxSyncKey := strings.TrimSpace(r.URL.Query().Get("MaxSynckey"))
 	currentSyncKey := strings.TrimSpace(r.URL.Query().Get("CurrentSynckey"))
-	mockResponse := map[string]any{
-		"uuid":             state.UUID,
-		"cache_key":        state.CacheKey,
-		"wxid":             state.Wxid,
-		"session_state":    state.SessionState,
-		"max_synckey":      maxSyncKey,
-		"current_synckey":  currentSyncKey,
-		"initialized_at":   now.Format(time.RFC3339Nano),
-		"mock_sync_status": "ready",
-	}
-	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-newinit")
+	result, err := s.login.Newinit(r.Context(), loginpkg.NewinitRequest{Wxid: wxid, MaxSyncKey: maxSyncKey, CurrentSyncKey: currentSyncKey})
 	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		s.writeLoginServiceError(w, requestID, err)
 		return
 	}
-	state.SamplePath = samplePath
-	sample := map[string]any{
-		"request": map[string]any{
-			"wxid":            wxid,
-			"max_synckey":     maxSyncKey,
-			"current_synckey": currentSyncKey,
-		},
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
-	}
-	if err := writeSample(samplePath, sample); err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	if err := s.states.Save(r.Context(), state); err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
-
-	data := map[string]any{
-		"mode":          "mock",
-		"uuid":          state.UUID,
-		"cache_key":     state.CacheKey,
-		"wxid":          state.Wxid,
-		"session_state": state.SessionState,
-		"login_state":   state.ToMap(),
-		"sample_path":   samplePath,
-		"stages": []string{
-			"parse_request",
-			"load_wxid_login_state",
-			"mock_newinit_sync",
-			"persist_login_state",
-			"write_sample",
-		},
-	}
-	for key, value := range mockResponse {
-		data[key] = value
-	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 登录初始化链路已跑通", RequestID: requestID, Data: data})
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 登录初始化链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, requestID string) {
@@ -362,75 +306,16 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
+	result, err := s.login.HeartBeat(r.Context(), loginpkg.HeartBeatRequest{Wxid: wxid})
 	if err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
+		if errors.Is(err, loginpkg.ErrSessionLoggedOut) {
+			s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID, Data: map[string]any{"login_state": result.State.ToMap()}})
+			return
+		}
+		s.writeLoginServiceError(w, requestID, err)
 		return
 	}
-	if !ok {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
-		return
-	}
-	if state.SessionState == "logged_out" {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID, Data: map[string]any{"login_state": state.ToMap()}})
-		return
-	}
-
-	now := time.Now().UTC()
-	state.HeartbeatStatus = "alive"
-	state.HeartbeatCount++
-	state.LastHeartbeatAt = now
-	mockResponse := map[string]any{
-		"uuid":             state.UUID,
-		"cache_key":        state.CacheKey,
-		"wxid":             state.Wxid,
-		"heartbeat_status": state.HeartbeatStatus,
-		"heartbeat_count":  state.HeartbeatCount,
-		"heartbeat_at":     now.Format(time.RFC3339Nano),
-	}
-	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-heartbeat")
-	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	state.SamplePath = samplePath
-	sample := map[string]any{
-		"request": map[string]any{
-			"wxid": wxid,
-		},
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
-	}
-	if err := writeSample(samplePath, sample); err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	if err := s.states.Save(r.Context(), state); err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
-
-	data := map[string]any{
-		"mode":             "mock",
-		"uuid":             state.UUID,
-		"cache_key":        state.CacheKey,
-		"wxid":             state.Wxid,
-		"heartbeat_status": state.HeartbeatStatus,
-		"heartbeat_count":  state.HeartbeatCount,
-		"login_state":      state.ToMap(),
-		"sample_path":      samplePath,
-		"stages": []string{
-			"parse_request",
-			"load_wxid_login_state",
-			"mock_short_heartbeat",
-			"persist_login_state",
-			"write_sample",
-		},
-	}
-	for key, value := range mockResponse {
-		data[key] = value
-	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 短心跳链路已跑通", RequestID: requestID, Data: data})
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 短心跳链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func (s *Server) handleLoginGet62Data(w http.ResponseWriter, r *http.Request, requestID string) {

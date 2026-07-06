@@ -18,12 +18,14 @@ import (
 )
 
 var (
-	ErrProtocolPack         = errors.New("login protocol pack failed")
-	ErrSamplePath           = errors.New("login sample path failed")
-	ErrSampleWrite          = errors.New("login sample write failed")
-	ErrStateStore           = errors.New("login state store failed")
-	ErrLoginStateNotFound   = errors.New("login state not found")
-	ErrUnsupportedLoginKind = errors.New("unsupported login kind")
+	ErrProtocolPack           = errors.New("login protocol pack failed")
+	ErrSamplePath             = errors.New("login sample path failed")
+	ErrSampleWrite            = errors.New("login sample write failed")
+	ErrStateStore             = errors.New("login state store failed")
+	ErrLoginStateNotFound     = errors.New("login state not found")
+	ErrWxidLoginStateNotFound = errors.New("wxid login state not found")
+	ErrUnsupportedLoginKind   = errors.New("unsupported login kind")
+	ErrSessionLoggedOut       = errors.New("session logged out")
 )
 
 type Dependencies struct {
@@ -72,6 +74,16 @@ type CheckQRRequest struct {
 	UUID string
 }
 
+type NewinitRequest struct {
+	Wxid           string
+	MaxSyncKey     string
+	CurrentSyncKey string
+}
+
+type HeartBeatRequest struct {
+	Wxid string
+}
+
 type GetQRResult struct {
 	Mode         string
 	UUID         string
@@ -100,6 +112,22 @@ type CheckQRResult struct {
 	SamplePath   string
 	MockResponse map[string]any
 	Stages       []string
+}
+
+type SessionResult struct {
+	Mode            string
+	UUID            string
+	CacheKey        string
+	Wxid            string
+	SessionState    string
+	HeartbeatStatus string
+	HeartbeatCount  int
+	LastInitAt      time.Time
+	LastHeartbeatAt time.Time
+	State           storage.LoginState
+	SamplePath      string
+	MockResponse    map[string]any
+	Stages          []string
 }
 
 type Import62DataRequest struct {
@@ -167,6 +195,37 @@ func (r CheckQRResult) ResponseData() map[string]any {
 		"login_state": r.State.ToMap(),
 		"sample_path": r.SamplePath,
 		"stages":      r.Stages,
+	}
+	for key, value := range r.MockResponse {
+		data[key] = value
+	}
+	return data
+}
+
+func (r SessionResult) ResponseData() map[string]any {
+	data := map[string]any{
+		"mode":        r.Mode,
+		"uuid":        r.UUID,
+		"cache_key":   r.CacheKey,
+		"wxid":        r.Wxid,
+		"login_state": r.State.ToMap(),
+		"sample_path": r.SamplePath,
+		"stages":      r.Stages,
+	}
+	if r.SessionState != "" {
+		data["session_state"] = r.SessionState
+	}
+	if r.HeartbeatStatus != "" {
+		data["heartbeat_status"] = r.HeartbeatStatus
+	}
+	if r.HeartbeatCount != 0 {
+		data["heartbeat_count"] = r.HeartbeatCount
+	}
+	if !r.LastInitAt.IsZero() {
+		data["initialized_at"] = r.LastInitAt.Format(time.RFC3339Nano)
+	}
+	if !r.LastHeartbeatAt.IsZero() {
+		data["heartbeat_at"] = r.LastHeartbeatAt.Format(time.RFC3339Nano)
 	}
 	for key, value := range r.MockResponse {
 		data[key] = value
@@ -353,6 +412,134 @@ func (s *Service) CheckQR(ctx context.Context, req CheckQRRequest) (CheckQRResul
 			"parse_request",
 			"load_qr_login_state",
 			"mock_poll_qr_status",
+			"persist_login_state",
+			"write_sample",
+		},
+	}, nil
+}
+
+func (s *Service) Newinit(ctx context.Context, req NewinitRequest) (SessionResult, error) {
+	wxid := strings.TrimSpace(req.Wxid)
+	state, ok, err := s.states.GetByWxid(ctx, wxid)
+	if err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	if !ok {
+		return SessionResult{}, fmt.Errorf("%w: %s", ErrWxidLoginStateNotFound, wxid)
+	}
+	now := s.now().UTC()
+	state.SessionState = "initialized"
+	state.LastInitAt = now
+	maxSyncKey := strings.TrimSpace(req.MaxSyncKey)
+	currentSyncKey := strings.TrimSpace(req.CurrentSyncKey)
+	mockResponse := map[string]any{
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"session_state":    state.SessionState,
+		"max_synckey":      maxSyncKey,
+		"current_synckey":  currentSyncKey,
+		"initialized_at":   now.Format(time.RFC3339Nano),
+		"mock_sync_status": "ready",
+	}
+	samplePath, err := sampleFilePath(s.sampleDir, state.UUID+"-newinit")
+	if err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrSamplePath, err)
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid":            wxid,
+			"max_synckey":     maxSyncKey,
+			"current_synckey": currentSyncKey,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.ToMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrSampleWrite, err)
+	}
+	if err := s.states.Save(ctx, state); err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	return SessionResult{
+		Mode:         "mock",
+		UUID:         state.UUID,
+		CacheKey:     state.CacheKey,
+		Wxid:         state.Wxid,
+		SessionState: state.SessionState,
+		LastInitAt:   now,
+		State:        state,
+		SamplePath:   samplePath,
+		MockResponse: mockResponse,
+		Stages: []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_newinit_sync",
+			"persist_login_state",
+			"write_sample",
+		},
+	}, nil
+}
+
+func (s *Service) HeartBeat(ctx context.Context, req HeartBeatRequest) (SessionResult, error) {
+	wxid := strings.TrimSpace(req.Wxid)
+	state, ok, err := s.states.GetByWxid(ctx, wxid)
+	if err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	if !ok {
+		return SessionResult{}, fmt.Errorf("%w: %s", ErrWxidLoginStateNotFound, wxid)
+	}
+	if state.SessionState == "logged_out" {
+		return SessionResult{State: state}, fmt.Errorf("%w: %s", ErrSessionLoggedOut, wxid)
+	}
+	now := s.now().UTC()
+	state.HeartbeatStatus = "alive"
+	state.HeartbeatCount++
+	state.LastHeartbeatAt = now
+	mockResponse := map[string]any{
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"heartbeat_status": state.HeartbeatStatus,
+		"heartbeat_count":  state.HeartbeatCount,
+		"heartbeat_at":     now.Format(time.RFC3339Nano),
+	}
+	samplePath, err := sampleFilePath(s.sampleDir, state.UUID+"-heartbeat")
+	if err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrSamplePath, err)
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid": wxid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.ToMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrSampleWrite, err)
+	}
+	if err := s.states.Save(ctx, state); err != nil {
+		return SessionResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	return SessionResult{
+		Mode:            "mock",
+		UUID:            state.UUID,
+		CacheKey:        state.CacheKey,
+		Wxid:            state.Wxid,
+		SessionState:    state.SessionState,
+		HeartbeatStatus: state.HeartbeatStatus,
+		HeartbeatCount:  state.HeartbeatCount,
+		LastHeartbeatAt: now,
+		State:           state,
+		SamplePath:      samplePath,
+		MockResponse:    mockResponse,
+		Stages: []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_short_heartbeat",
 			"persist_login_state",
 			"write_sample",
 		},
