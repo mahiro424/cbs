@@ -90,6 +90,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLoginHeartBeat(w, r, requestID)
 		return
 	}
+	if route.Path == "/Login/Get62Data" {
+		s.handleLoginGet62Data(w, r, requestID)
+		return
+	}
+	if route.Path == "/Login/GetA16Data" {
+		s.handleLoginGetA16Data(w, r, requestID)
+		return
+	}
 	s.write(w, http.StatusOK, Envelope{Success: false, Code: "not_implemented", Message: "接口已接入但未实现", RequestID: requestID, Data: map[string]any{"path": route.Path, "method": route.Method, "module": route.Module, "operation": route.Operation}})
 }
 
@@ -321,6 +329,7 @@ func (s *Server) handleLoginData62(w http.ResponseWriter, r *http.Request, reque
 		DeviceName: deviceName,
 		Type:       "iphone",
 		Wxid:       wxid,
+		Data62:     req.Data62,
 		LoginKind:  "data62_mock",
 		PackKind:   "hybrid_ecdh_ios_placeholder",
 		Platform:   "ios",
@@ -385,6 +394,7 @@ func (s *Server) handleLoginA16Data(w http.ResponseWriter, r *http.Request, requ
 		DeviceName: deviceName,
 		Type:       "android",
 		Wxid:       wxid,
+		A16:        req.A16,
 		LoginKind:  "a16_mock",
 		PackKind:   "hybrid_ecdh_android_placeholder",
 		Platform:   "android",
@@ -413,6 +423,8 @@ type mockLoginSpec struct {
 	DeviceName     string
 	Type           string
 	Wxid           string
+	Data62         string
+	A16            string
 	LoginKind      string
 	PackKind       string
 	Platform       string
@@ -452,6 +464,8 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		DeviceName: spec.DeviceName,
 		Type:       spec.Type,
 		Wxid:       spec.Wxid,
+		Data62:     spec.Data62,
+		A16:        spec.A16,
 		Mode:       "mock",
 		LoginKind:  spec.LoginKind,
 		CreatedAt:  time.Now().UTC(),
@@ -629,6 +643,114 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 短心跳链路已跑通", RequestID: requestID, Data: data})
 }
 
+func (s *Server) handleLoginGet62Data(w http.ResponseWriter, r *http.Request, requestID string) {
+	s.handleLoginExportData(w, r, requestID, loginExportSpec{
+		ExportKind:    "mock_62data",
+		RequiredKind:  "data62_mock",
+		ResponseField: "data62",
+		Stages: []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_export_62data",
+			"persist_login_state",
+			"write_sample",
+		},
+		SuccessMessage: "mock 62 数据导出链路已跑通",
+	})
+}
+
+func (s *Server) handleLoginGetA16Data(w http.ResponseWriter, r *http.Request, requestID string) {
+	s.handleLoginExportData(w, r, requestID, loginExportSpec{
+		ExportKind:    "mock_a16data",
+		RequiredKind:  "a16_mock",
+		ResponseField: "a16",
+		Stages: []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_export_a16data",
+			"persist_login_state",
+			"write_sample",
+		},
+		SuccessMessage: "mock A16 数据导出链路已跑通",
+	})
+}
+
+type loginExportSpec struct {
+	ExportKind     string
+	RequiredKind   string
+	ResponseField  string
+	Stages         []string
+	SuccessMessage string
+}
+
+func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, requestID string, spec loginExportSpec) {
+	wxid := strings.TrimSpace(r.URL.Query().Get("wxid"))
+	if wxid == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
+		return
+	}
+	state, ok := s.states.GetByWxid(wxid)
+	if !ok {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+		return
+	}
+	if state.LoginKind != spec.RequiredKind {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 wxid 登录态不支持该导出类型", RequestID: requestID, Data: state.toMap()})
+		return
+	}
+
+	exportValue := state.Data62
+	if spec.ResponseField == "a16" {
+		exportValue = state.A16
+	}
+	now := time.Now().UTC()
+	state.LastExportKind = spec.ExportKind
+	state.LastExportAt = now
+	mockResponse := map[string]any{
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"export_kind":      spec.ExportKind,
+		"exported_at":      now.Format(time.RFC3339Nano),
+		"payload_size":     len(exportValue),
+		spec.ResponseField: exportValue,
+	}
+	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-"+spec.ExportKind)
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid": wxid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.toMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	s.states.Save(state)
+
+	data := map[string]any{
+		"mode":             "mock",
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"export_kind":      spec.ExportKind,
+		"login_state":      state.toMap(),
+		"sample_path":      samplePath,
+		"stages":           spec.Stages,
+		spec.ResponseField: exportValue,
+	}
+	for key, value := range mockResponse {
+		data[key] = value
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
+}
+
 func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request, requestID string) {
 	uuid := strings.TrimSpace(r.URL.Query().Get("uuid"))
 	cacheKey := strings.TrimSpace(r.URL.Query().Get("cache_key"))
@@ -666,6 +788,8 @@ type loginState struct {
 	DeviceName      string
 	Type            string
 	Wxid            string
+	Data62          string
+	A16             string
 	Mode            string
 	LoginKind       string
 	QRStatus        string
@@ -678,6 +802,8 @@ type loginState struct {
 	CheckedAt       time.Time
 	LastInitAt      time.Time
 	LastHeartbeatAt time.Time
+	LastExportKind  string
+	LastExportAt    time.Time
 	Protocol        map[string]any
 }
 
@@ -696,6 +822,7 @@ func (s loginState) toMap() map[string]any {
 		"session_state":    s.SessionState,
 		"heartbeat_status": s.HeartbeatStatus,
 		"heartbeat_count":  s.HeartbeatCount,
+		"last_export_kind": s.LastExportKind,
 		"sample_path":      s.SamplePath,
 		"created_at":       s.CreatedAt.Format(time.RFC3339Nano),
 		"protocol":         s.Protocol,
@@ -708,6 +835,9 @@ func (s loginState) toMap() map[string]any {
 	}
 	if !s.LastHeartbeatAt.IsZero() {
 		m["last_heartbeat_at"] = s.LastHeartbeatAt.Format(time.RFC3339Nano)
+	}
+	if !s.LastExportAt.IsZero() {
+		m["last_export_at"] = s.LastExportAt.Format(time.RFC3339Nano)
 	}
 	return m
 }

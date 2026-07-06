@@ -367,3 +367,124 @@ func assertLoginStageSample(t *testing.T, path string, wxid string, sessionState
 		t.Fatalf("登录阶段样本 mock_response = %+v，期望 heartbeat_status=%s", mockResponse, heartbeatStatus)
 	}
 }
+
+func TestLoginExport62DataAndA16DataMockPathsUseWxidState(t *testing.T) {
+	cfg := config.Default()
+	cfg.SampleDir = t.TempDir()
+	h := httpapi.NewServer(cfg)
+
+	missing62 := postJSON(t, h, "/Login/Get62Data", `{}`)
+	if missing62.Success || missing62.Code != "param_error" {
+		t.Fatalf("Get62Data 缺少 wxid 响应 = %+v，期望 param_error", missing62)
+	}
+	missingA16 := postJSON(t, h, "/Login/GetA16Data", `{}`)
+	if missingA16.Success || missingA16.Code != "param_error" {
+		t.Fatalf("GetA16Data 缺少 wxid 响应 = %+v，期望 param_error", missingA16)
+	}
+	notFound := postJSON(t, h, "/Login/Get62Data?wxid=wxid_not_exists", `{}`)
+	if notFound.Success || notFound.Code != "cache_not_found" {
+		t.Fatalf("不存在 wxid 响应 = %+v，期望 cache_not_found", notFound)
+	}
+
+	login62 := postJSON(t, h, "/Login/62data", `{"Data62":"mock-62-export-source","DeviceID":"iphone-export","DeviceName":"62导出设备","Wxid":"wxid_export_62"}`)
+	if !login62.Success || login62.Code != "ok" {
+		t.Fatalf("62data 响应 = %+v，期望 ok", login62)
+	}
+	login62Data := mustMap(t, login62.Data)
+	uuid62 := mustString(t, login62Data, "uuid")
+
+	loginA16 := postJSON(t, h, "/Login/A16Data", `{"A16":"mock-a16-export-source","DeviceID":"android-export","DeviceName":"A16导出设备","Wxid":"wxid_export_a16"}`)
+	if !loginA16.Success || loginA16.Code != "ok" {
+		t.Fatalf("A16Data 响应 = %+v，期望 ok", loginA16)
+	}
+	loginA16Data := mustMap(t, loginA16.Data)
+	uuidA16 := mustString(t, loginA16Data, "uuid")
+
+	wrongA16 := postJSON(t, h, "/Login/GetA16Data?wxid=wxid_export_62", `{}`)
+	if wrongA16.Success || wrongA16.Code != "unsupported_login_kind" {
+		t.Fatalf("62 登录态导出 A16 响应 = %+v，期望 unsupported_login_kind", wrongA16)
+	}
+	wrong62 := postJSON(t, h, "/Login/Get62Data?wxid=wxid_export_a16", `{}`)
+	if wrong62.Success || wrong62.Code != "unsupported_login_kind" {
+		t.Fatalf("A16 登录态导出 62 响应 = %+v，期望 unsupported_login_kind", wrong62)
+	}
+
+	export62 := postJSON(t, h, "/Login/Get62Data?wxid=wxid_export_62", `{}`)
+	if !export62.Success || export62.Code != "ok" {
+		t.Fatalf("Get62Data 响应 = %+v，期望 ok", export62)
+	}
+	export62Data := mustMap(t, export62.Data)
+	if export62Data["wxid"] != "wxid_export_62" || export62Data["export_kind"] != "mock_62data" || export62Data["data62"] != "mock-62-export-source" {
+		t.Fatalf("Get62Data data = %+v，期望导出 62 数据", export62Data)
+	}
+	if _, ok := export62Data["stages"].([]any); !ok {
+		t.Fatalf("Get62Data stages = %#v，期望数组", export62Data["stages"])
+	}
+	export62State := mustMap(t, export62Data["login_state"])
+	if export62State["uuid"] != uuid62 || export62State["last_export_kind"] != "mock_62data" {
+		t.Fatalf("Get62Data login_state = %+v，期望记录 last_export_kind", export62State)
+	}
+	export62SamplePath := mustString(t, export62Data, "sample_path")
+	assertExportSample(t, export62SamplePath, "wxid_export_62", "mock_62data")
+
+	exportA16 := postJSON(t, h, "/Login/GetA16Data?wxid=wxid_export_a16", `{}`)
+	if !exportA16.Success || exportA16.Code != "ok" {
+		t.Fatalf("GetA16Data 响应 = %+v，期望 ok", exportA16)
+	}
+	exportA16Data := mustMap(t, exportA16.Data)
+	if exportA16Data["wxid"] != "wxid_export_a16" || exportA16Data["export_kind"] != "mock_a16data" || exportA16Data["a16"] != "mock-a16-export-source" {
+		t.Fatalf("GetA16Data data = %+v，期望导出 A16 数据", exportA16Data)
+	}
+	if _, ok := exportA16Data["stages"].([]any); !ok {
+		t.Fatalf("GetA16Data stages = %#v，期望数组", exportA16Data["stages"])
+	}
+	exportA16State := mustMap(t, exportA16Data["login_state"])
+	if exportA16State["uuid"] != uuidA16 || exportA16State["last_export_kind"] != "mock_a16data" {
+		t.Fatalf("GetA16Data login_state = %+v，期望记录 last_export_kind", exportA16State)
+	}
+	exportA16SamplePath := mustString(t, exportA16Data, "sample_path")
+	assertExportSample(t, exportA16SamplePath, "wxid_export_a16", "mock_a16data")
+
+	byUUID62 := postJSON(t, h, "/Login/GetCacheInfo?uuid="+uuid62, `{}`)
+	if !byUUID62.Success || byUUID62.Code != "ok" {
+		t.Fatalf("按 uuid 查询 62 响应 = %+v，期望 ok", byUUID62)
+	}
+	state62 := mustMap(t, byUUID62.Data)
+	if state62["last_export_kind"] != "mock_62data" || state62["sample_path"] != export62SamplePath {
+		t.Fatalf("按 uuid 查询 62 结果 = %+v，期望反映最近导出状态", state62)
+	}
+
+	byUUIDA16 := postJSON(t, h, "/Login/GetCacheInfo?uuid="+uuidA16, `{}`)
+	if !byUUIDA16.Success || byUUIDA16.Code != "ok" {
+		t.Fatalf("按 uuid 查询 A16 响应 = %+v，期望 ok", byUUIDA16)
+	}
+	stateA16 := mustMap(t, byUUIDA16.Data)
+	if stateA16["last_export_kind"] != "mock_a16data" || stateA16["sample_path"] != exportA16SamplePath {
+		t.Fatalf("按 uuid 查询 A16 结果 = %+v，期望反映最近导出状态", stateA16)
+	}
+}
+
+func assertExportSample(t *testing.T, path string, wxid string, exportKind string) {
+	t.Helper()
+	sampleRaw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取导出样本失败：%v", err)
+	}
+	var sample map[string]any
+	if err := json.Unmarshal(sampleRaw, &sample); err != nil {
+		t.Fatalf("导出样本不是 JSON：%v", err)
+	}
+	for _, key := range []string{"request", "mock_response", "login_state"} {
+		if _, ok := sample[key]; !ok {
+			t.Fatalf("导出样本缺少字段 %s：%+v", key, sample)
+		}
+	}
+	request := mustMap(t, sample["request"])
+	if request["wxid"] != wxid {
+		t.Fatalf("导出样本 request = %+v，期望 wxid=%s", request, wxid)
+	}
+	mockResponse := mustMap(t, sample["mock_response"])
+	if mockResponse["export_kind"] != exportKind {
+		t.Fatalf("导出样本 mock_response = %+v，期望 export_kind=%s", mockResponse, exportKind)
+	}
+}
