@@ -66,6 +66,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLoginGetQR(w, r, requestID)
 		return
 	}
+	if route.Path == "/Login/62data" {
+		s.handleLoginData62(w, r, requestID)
+		return
+	}
+	if route.Path == "/Login/A16Data" {
+		s.handleLoginA16Data(w, r, requestID)
+		return
+	}
 	if route.Path == "/Login/GetCacheInfo" {
 		s.handleLoginGetCacheInfo(w, r, requestID)
 		return
@@ -122,6 +130,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 	protocol := map[string]any{
 		"pack_kind":      "hybrid_ecdh_ios_placeholder",
 		"platform":       "ios",
+		"login_kind":     "getqr_mock",
 		"payload_sha256": hex.EncodeToString(sum[:]),
 		"input_length":   len(seed),
 	}
@@ -137,6 +146,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		DeviceName: deviceName,
 		Type:       deviceType,
 		Mode:       "mock",
+		LoginKind:  "getqr_mock",
 		CreatedAt:  time.Now().UTC(),
 		Protocol:   protocol,
 	}
@@ -186,6 +196,217 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码链路已跑通", RequestID: requestID, Data: data})
 }
 
+type data62LoginRequest struct {
+	Data62     string `json:"Data62"`
+	DeviceID   string `json:"DeviceID"`
+	DeviceName string `json:"DeviceName"`
+	Wxid       string `json:"Wxid"`
+	Proxy      any    `json:"Proxy,omitempty"`
+}
+
+func (s *Server) handleLoginData62(w http.ResponseWriter, r *http.Request, requestID string) {
+	var req data62LoginRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	deviceID := strings.TrimSpace(req.DeviceID)
+	if deviceID == "" {
+		deviceID = "mock-iphone"
+	}
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "mock-iphone-name"
+	}
+	wxid := strings.TrimSpace(req.Wxid)
+	if wxid == "" {
+		wxid = "wxid_mock_data62"
+	}
+	requestSample := map[string]any{
+		"data62":      req.Data62,
+		"device_id":   deviceID,
+		"device_name": deviceName,
+		"type":        "iphone",
+		"wxid":        wxid,
+	}
+	if req.Proxy != nil {
+		requestSample["proxy"] = req.Proxy
+	}
+	s.handleMockLogin(w, requestID, mockLoginSpec{
+		SeedParts:  []string{"data62_mock", req.Data62, deviceID, deviceName, wxid},
+		Request:    requestSample,
+		DeviceID:   deviceID,
+		DeviceName: deviceName,
+		Type:       "iphone",
+		LoginKind:  "data62_mock",
+		PackKind:   "hybrid_ecdh_ios_placeholder",
+		Platform:   "ios",
+		Payload:    req.Data62,
+		MockResponse: map[string]any{
+			"status": "mock_login_ready",
+			"wxid":   wxid,
+		},
+		Stages: []string{
+			"parse_request",
+			"build_login_context",
+			"load_62data_fixture",
+			"hybrid_ecdh_ios_pack_placeholder",
+			"mock_network_response",
+			"persist_login_state",
+			"write_sample",
+		},
+		SuccessMessage: "mock 62data 登录链路已跑通",
+	})
+}
+
+type a16LoginRequest struct {
+	A16        string `json:"A16"`
+	DeviceID   string `json:"DeviceID"`
+	DeviceName string `json:"DeviceName"`
+	Wxid       string `json:"Wxid"`
+	Proxy      any    `json:"Proxy,omitempty"`
+}
+
+func (s *Server) handleLoginA16Data(w http.ResponseWriter, r *http.Request, requestID string) {
+	var req a16LoginRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	deviceID := strings.TrimSpace(req.DeviceID)
+	if deviceID == "" {
+		deviceID = "mock-android"
+	}
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "mock-android-name"
+	}
+	wxid := strings.TrimSpace(req.Wxid)
+	if wxid == "" {
+		wxid = "wxid_mock_a16"
+	}
+	requestSample := map[string]any{
+		"a16":         req.A16,
+		"device_id":   deviceID,
+		"device_name": deviceName,
+		"type":        "android",
+		"wxid":        wxid,
+	}
+	if req.Proxy != nil {
+		requestSample["proxy"] = req.Proxy
+	}
+	s.handleMockLogin(w, requestID, mockLoginSpec{
+		SeedParts:  []string{"a16_mock", req.A16, deviceID, deviceName, wxid},
+		Request:    requestSample,
+		DeviceID:   deviceID,
+		DeviceName: deviceName,
+		Type:       "android",
+		LoginKind:  "a16_mock",
+		PackKind:   "hybrid_ecdh_android_placeholder",
+		Platform:   "android",
+		Payload:    req.A16,
+		MockResponse: map[string]any{
+			"status": "mock_login_ready",
+			"wxid":   wxid,
+		},
+		Stages: []string{
+			"parse_request",
+			"build_login_context",
+			"load_a16_fixture",
+			"hybrid_ecdh_android_pack_placeholder",
+			"mock_network_response",
+			"persist_login_state",
+			"write_sample",
+		},
+		SuccessMessage: "mock A16Data 登录链路已跑通",
+	})
+}
+
+type mockLoginSpec struct {
+	SeedParts      []string
+	Request        map[string]any
+	DeviceID       string
+	DeviceName     string
+	Type           string
+	LoginKind      string
+	PackKind       string
+	Platform       string
+	Payload        string
+	MockResponse   map[string]any
+	Stages         []string
+	SuccessMessage string
+}
+
+func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec mockLoginSpec) {
+	seed := strings.Join(spec.SeedParts, "|")
+	if strings.Trim(seed, "|") == "" {
+		seed = spec.LoginKind + "|anonymous-device"
+	}
+	sum := sha256.Sum256([]byte(seed))
+	payloadSum := sha256.Sum256([]byte(spec.Payload))
+	uuid := "mock-" + hex.EncodeToString(sum[:])[:24]
+	cacheKey := "login:mock:" + uuid
+	protocol := map[string]any{
+		"pack_kind":      spec.PackKind,
+		"platform":       spec.Platform,
+		"login_kind":     spec.LoginKind,
+		"payload_sha256": hex.EncodeToString(payloadSum[:]),
+		"input_length":   len(spec.Payload),
+	}
+	mockResponse := map[string]any{
+		"uuid":      uuid,
+		"cache_key": cacheKey,
+	}
+	for key, value := range spec.MockResponse {
+		mockResponse[key] = value
+	}
+	state := loginState{
+		UUID:       uuid,
+		CacheKey:   cacheKey,
+		DeviceID:   spec.DeviceID,
+		DeviceName: spec.DeviceName,
+		Type:       spec.Type,
+		Mode:       "mock",
+		LoginKind:  spec.LoginKind,
+		CreatedAt:  time.Now().UTC(),
+		Protocol:   protocol,
+	}
+	samplePath, err := sampleFilePath(s.cfg.SampleDir, uuid)
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request":       spec.Request,
+		"protocol":      protocol,
+		"mock_response": mockResponse,
+		"login_state":   state.toMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	s.states.Save(state)
+
+	data := map[string]any{
+		"mode":        "mock",
+		"uuid":        uuid,
+		"cache_key":   cacheKey,
+		"device_id":   spec.DeviceID,
+		"device_name": spec.DeviceName,
+		"type":        spec.Type,
+		"protocol":    protocol,
+		"login_state": state.toMap(),
+		"sample_path": samplePath,
+		"stages":      spec.Stages,
+	}
+	for key, value := range mockResponse {
+		data[key] = value
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
+}
+
 func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request, requestID string) {
 	uuid := strings.TrimSpace(r.URL.Query().Get("uuid"))
 	cacheKey := strings.TrimSpace(r.URL.Query().Get("cache_key"))
@@ -223,6 +444,7 @@ type loginState struct {
 	DeviceName string
 	Type       string
 	Mode       string
+	LoginKind  string
 	SamplePath string
 	CreatedAt  time.Time
 	Protocol   map[string]any
@@ -236,6 +458,7 @@ func (s loginState) toMap() map[string]any {
 		"device_name": s.DeviceName,
 		"type":        s.Type,
 		"mode":        s.Mode,
+		"login_kind":  s.LoginKind,
 		"sample_path": s.SamplePath,
 		"created_at":  s.CreatedAt.Format(time.RFC3339Nano),
 		"protocol":    s.Protocol,
