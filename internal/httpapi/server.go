@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mahiro424/cbs/internal/config"
+	loginpkg "github.com/mahiro424/cbs/internal/login"
 	"github.com/mahiro424/cbs/internal/network"
 	protocolpkg "github.com/mahiro424/cbs/internal/protocol"
 	"github.com/mahiro424/cbs/internal/storage"
@@ -31,6 +32,7 @@ type Server struct {
 	network   network.Client
 	netMode   string
 	netErr    error
+	login     *loginpkg.Service
 	seq       atomic.Uint64
 }
 
@@ -38,6 +40,7 @@ func NewServer(cfg config.Config) *Server {
 	states, stateMode, stateErr := storage.NewLoginStateStoreFromConfig(cfg)
 	netClient, netMode, netErr := network.NewClient(network.Config{Mode: cfg.NetworkMode})
 	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: states, stateMode: stateMode, stateErr: stateErr, network: netClient, netMode: netMode, netErr: netErr}
+	s.login = loginpkg.NewService(loginpkg.Dependencies{States: states, Network: netClient, SampleDir: cfg.SampleDir})
 	for _, route := range AllRoutes() {
 		method := strings.ToUpper(route.Method)
 		route.Method = method
@@ -163,6 +166,23 @@ func (s *Server) writeNetworkError(w http.ResponseWriter, requestID string, err 
 	s.write(w, http.StatusBadGateway, Envelope{Success: false, Code: "network_error", Message: err.Error(), RequestID: requestID})
 }
 
+func (s *Server) writeLoginServiceError(w http.ResponseWriter, requestID string, err error) {
+	switch {
+	case errors.Is(err, network.ErrRealNetworkNotReady), errors.Is(err, network.ErrNetworkConfig):
+		s.writeNetworkError(w, requestID, err)
+	case errors.Is(err, loginpkg.ErrProtocolPack):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrSamplePath):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrSampleWrite):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrStateStore):
+		s.writeLoginStateStoreError(w, requestID, err)
+	default:
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "login_error", Message: err.Error(), RequestID: requestID})
+	}
+}
+
 type getQRRequest struct {
 	DeviceID   string `json:"DeviceID"`
 	DeviceName string `json:"DeviceName"`
@@ -176,111 +196,17 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	seed := strings.Join([]string{req.DeviceID, req.DeviceName, req.Type}, "|")
-	if strings.Trim(seed, "|") == "" {
-		seed = "anonymous-device"
-	}
-	sum := sha256.Sum256([]byte(seed))
-	uuid := "mock-" + hex.EncodeToString(sum[:])[:24]
-	deviceID := strings.TrimSpace(req.DeviceID)
-	if deviceID == "" {
-		deviceID = "mock-device"
-	}
-	deviceName := strings.TrimSpace(req.DeviceName)
-	if deviceName == "" {
-		deviceName = "mock-device-name"
-	}
-	deviceType := strings.TrimSpace(req.Type)
-	if deviceType == "" {
-		deviceType = "ipad"
-	}
-	cacheKey := "login:mock:" + uuid
-	hybrid, _, err := protocolpkg.HybridECDHPackIOS(protocolpkg.HybridRequest{
-		Operation: "Login.GetQR",
-		Payload:   []byte(seed),
-		DeviceID:  deviceID,
-		LoginKind: "getqr_mock",
+	result, err := s.login.GetQR(r.Context(), loginpkg.GetQRRequest{
+		DeviceID:   req.DeviceID,
+		DeviceName: req.DeviceName,
+		Type:       req.Type,
+		Proxy:      req.Proxy,
 	})
 	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+		s.writeLoginServiceError(w, requestID, err)
 		return
 	}
-	protocol := protocolTraceFromHybrid(hybrid, "getqr_mock")
-	networkTrace, err := s.sendLoginNetwork(r.Context(), "Login.GetQR", "getqr_mock", hybrid.Platform, hybrid, map[string]string{
-		"device_id": deviceID,
-		"type":      deviceType,
-	})
-	if err != nil {
-		s.writeNetworkError(w, requestID, err)
-		return
-	}
-	mockResponse := map[string]any{
-		"uuid":      uuid,
-		"qr_url":    "mock://login/" + uuid,
-		"status":    "waiting_scan",
-		"qr_status": "waiting_scan",
-	}
-	state := storage.LoginState{
-		UUID:       uuid,
-		CacheKey:   cacheKey,
-		DeviceID:   deviceID,
-		DeviceName: deviceName,
-		Type:       deviceType,
-		Mode:       "mock",
-		LoginKind:  "getqr_mock",
-		QRStatus:   "waiting_scan",
-		CreatedAt:  time.Now().UTC(),
-		Protocol:   protocol,
-	}
-	samplePath, err := sampleFilePath(s.cfg.SampleDir, uuid)
-	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	state.SamplePath = samplePath
-	sample := map[string]any{
-		"request": map[string]any{
-			"device_id":   deviceID,
-			"device_name": deviceName,
-			"type":        deviceType,
-		},
-		"protocol":      protocol,
-		"network":       networkTrace,
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
-	}
-	if err := writeSample(samplePath, sample); err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	if err := s.states.Save(r.Context(), state); err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
-
-	data := map[string]any{
-		"mode":        "mock",
-		"uuid":        uuid,
-		"qr_url":      mockResponse["qr_url"],
-		"cache_key":   cacheKey,
-		"device_id":   deviceID,
-		"device_name": deviceName,
-		"type":        deviceType,
-		"protocol":    protocol,
-		"network":     networkTrace,
-		"login_state": state.ToMap(),
-		"sample_path": samplePath,
-		"stages": []string{
-			"parse_request",
-			"build_login_context",
-			"prepare_device_profile",
-			"hybrid_ecdh_ios_pack_placeholder",
-			"mock_network_response",
-			"persist_login_state",
-			"write_sample",
-		},
-	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码链路已跑通", RequestID: requestID, Data: data})
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requestID string) {
