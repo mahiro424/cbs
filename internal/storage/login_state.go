@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -47,6 +48,14 @@ func DecodeLoginState(payload []byte) (LoginState, error) {
 		return LoginState{}, err
 	}
 	return state, nil
+}
+
+// LoginStateStore 是登录态持久化后端的公共接口。
+// HTTP、mock-first 链路和后续真实 Redis backend 都应依赖该接口，而不是依赖具体实现。
+type LoginStateStore interface {
+	Save(ctx context.Context, state LoginState) error
+	Get(ctx context.Context, uuid string, cacheKey string) (LoginState, bool, error)
+	GetByWxid(ctx context.Context, wxid string) (LoginState, bool, error)
 }
 
 func LoginStateRedisKey(uuid string) string {
@@ -112,30 +121,57 @@ func NewMemoryLoginStateStore() *MemoryLoginStateStore {
 	return &MemoryLoginStateStore{byUUID: make(map[string]LoginState), byCache: make(map[string]LoginState), byWxid: make(map[string]LoginState)}
 }
 
-func (s *MemoryLoginStateStore) Save(state LoginState) {
+func (s *MemoryLoginStateStore) Save(ctx context.Context, state LoginState) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.byUUID[state.UUID] = state
-	s.byCache[state.CacheKey] = state
+	if strings.TrimSpace(state.UUID) != "" {
+		s.byUUID[state.UUID] = state
+	}
+	if strings.TrimSpace(state.CacheKey) != "" {
+		s.byCache[state.CacheKey] = state
+	}
 	if strings.TrimSpace(state.Wxid) != "" {
 		s.byWxid[state.Wxid] = state
 	}
+	return nil
 }
 
-func (s *MemoryLoginStateStore) Get(uuid string, cacheKey string) (LoginState, bool) {
+func (s *MemoryLoginStateStore) Get(ctx context.Context, uuid string, cacheKey string) (LoginState, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return LoginState{}, false, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if strings.TrimSpace(uuid) != "" {
 		state, ok := s.byUUID[uuid]
-		return state, ok
+		return state, ok, nil
+	}
+	if strings.TrimSpace(cacheKey) == "" {
+		return LoginState{}, false, nil
 	}
 	state, ok := s.byCache[cacheKey]
-	return state, ok
+	return state, ok, nil
 }
 
-func (s *MemoryLoginStateStore) GetByWxid(wxid string) (LoginState, bool) {
+func (s *MemoryLoginStateStore) GetByWxid(ctx context.Context, wxid string) (LoginState, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return LoginState{}, false, err
+	}
+	if strings.TrimSpace(wxid) == "" {
+		return LoginState{}, false, nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	state, ok := s.byWxid[wxid]
-	return state, ok
+	return state, ok, nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }

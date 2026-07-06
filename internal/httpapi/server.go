@@ -24,7 +24,7 @@ type Server struct {
 	cfg       config.Config
 	routes    map[string]Route
 	pathIndex map[string]struct{}
-	states    *storage.MemoryLoginStateStore
+	states    storage.LoginStateStore
 	seq       atomic.Uint64
 }
 
@@ -119,6 +119,10 @@ func (s *Server) write(w http.ResponseWriter, status int, body Envelope) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+func (s *Server) writeLoginStateStoreError(w http.ResponseWriter, requestID string, err error) {
+	s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "login_state_store_error", Message: err.Error(), RequestID: requestID})
+}
+
 type getQRRequest struct {
 	DeviceID   string `json:"DeviceID"`
 	DeviceName string `json:"DeviceName"`
@@ -200,7 +204,10 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(r.Context(), state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":        "mock",
@@ -232,7 +239,11 @@ func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 uuid", RequestID: requestID})
 		return
 	}
-	state, ok := s.states.Get(uuid, "")
+	state, ok, err := s.states.Get(r.Context(), uuid, "")
+	if err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到二维码登录态", RequestID: requestID})
 		return
@@ -271,7 +282,10 @@ func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(r.Context(), state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":        "mock",
@@ -330,7 +344,7 @@ func (s *Server) handleLoginData62(w http.ResponseWriter, r *http.Request, reque
 	if req.Proxy != nil {
 		requestSample["proxy"] = req.Proxy
 	}
-	s.handleMockLogin(w, requestID, mockLoginSpec{
+	s.handleMockLogin(w, r.Context(), requestID, mockLoginSpec{
 		SeedParts:  []string{"data62_mock", req.Data62, deviceID, deviceName, wxid},
 		Request:    requestSample,
 		DeviceID:   deviceID,
@@ -395,7 +409,7 @@ func (s *Server) handleLoginA16Data(w http.ResponseWriter, r *http.Request, requ
 	if req.Proxy != nil {
 		requestSample["proxy"] = req.Proxy
 	}
-	s.handleMockLogin(w, requestID, mockLoginSpec{
+	s.handleMockLogin(w, r.Context(), requestID, mockLoginSpec{
 		SeedParts:  []string{"a16_mock", req.A16, deviceID, deviceName, wxid},
 		Request:    requestSample,
 		DeviceID:   deviceID,
@@ -442,7 +456,7 @@ type mockLoginSpec struct {
 	SuccessMessage string
 }
 
-func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec mockLoginSpec) {
+func (s *Server) handleMockLogin(w http.ResponseWriter, ctx context.Context, requestID string, spec mockLoginSpec) {
 	seed := strings.Join(spec.SeedParts, "|")
 	if strings.Trim(seed, "|") == "" {
 		seed = spec.LoginKind + "|anonymous-device"
@@ -503,7 +517,10 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(ctx, state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":        "mock",
@@ -543,7 +560,11 @@ func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok := s.states.GetByWxid(wxid)
+	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
+	if err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
 		return
@@ -582,7 +603,10 @@ func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(r.Context(), state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":          "mock",
@@ -612,7 +636,11 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok := s.states.GetByWxid(wxid)
+	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
+	if err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
 		return
@@ -651,7 +679,10 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(r.Context(), state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":             "mock",
@@ -722,7 +753,11 @@ func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, r
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok := s.states.GetByWxid(wxid)
+	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
+	if err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
 		return
@@ -765,7 +800,10 @@ func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, r
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(r.Context(), state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":             "mock",
@@ -790,7 +828,11 @@ func (s *Server) handleLoginLogOut(w http.ResponseWriter, r *http.Request, reque
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok := s.states.GetByWxid(wxid)
+	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
+	if err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
 		return
@@ -824,7 +866,10 @@ func (s *Server) handleLoginLogOut(w http.ResponseWriter, r *http.Request, reque
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	s.states.Save(state)
+	if err := s.states.Save(r.Context(), state); err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 
 	data := map[string]any{
 		"mode":          "mock",
@@ -855,7 +900,11 @@ func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request,
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 uuid 或 cache_key", RequestID: requestID})
 		return
 	}
-	state, ok := s.states.Get(uuid, cacheKey)
+	state, ok, err := s.states.Get(r.Context(), uuid, cacheKey)
+	if err != nil {
+		s.writeLoginStateStoreError(w, requestID, err)
+		return
+	}
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到登录态", RequestID: requestID})
 		return
