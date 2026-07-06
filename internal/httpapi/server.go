@@ -82,6 +82,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLoginGetCacheInfo(w, r, requestID)
 		return
 	}
+	if route.Path == "/Login/Newinit" {
+		s.handleLoginNewinit(w, r, requestID)
+		return
+	}
+	if route.Path == "/Login/HeartBeat" {
+		s.handleLoginHeartBeat(w, r, requestID)
+		return
+	}
 	s.write(w, http.StatusOK, Envelope{Success: false, Code: "not_implemented", Message: "接口已接入但未实现", RequestID: requestID, Data: map[string]any{"path": route.Path, "method": route.Method, "module": route.Module, "operation": route.Operation}})
 }
 
@@ -312,6 +320,7 @@ func (s *Server) handleLoginData62(w http.ResponseWriter, r *http.Request, reque
 		DeviceID:   deviceID,
 		DeviceName: deviceName,
 		Type:       "iphone",
+		Wxid:       wxid,
 		LoginKind:  "data62_mock",
 		PackKind:   "hybrid_ecdh_ios_placeholder",
 		Platform:   "ios",
@@ -375,6 +384,7 @@ func (s *Server) handleLoginA16Data(w http.ResponseWriter, r *http.Request, requ
 		DeviceID:   deviceID,
 		DeviceName: deviceName,
 		Type:       "android",
+		Wxid:       wxid,
 		LoginKind:  "a16_mock",
 		PackKind:   "hybrid_ecdh_android_placeholder",
 		Platform:   "android",
@@ -402,6 +412,7 @@ type mockLoginSpec struct {
 	DeviceID       string
 	DeviceName     string
 	Type           string
+	Wxid           string
 	LoginKind      string
 	PackKind       string
 	Platform       string
@@ -440,6 +451,7 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		DeviceID:   spec.DeviceID,
 		DeviceName: spec.DeviceName,
 		Type:       spec.Type,
+		Wxid:       spec.Wxid,
 		Mode:       "mock",
 		LoginKind:  spec.LoginKind,
 		CreatedAt:  time.Now().UTC(),
@@ -481,6 +493,142 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
 }
 
+func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requestID string) {
+	wxid := strings.TrimSpace(r.URL.Query().Get("wxid"))
+	if wxid == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
+		return
+	}
+	state, ok := s.states.GetByWxid(wxid)
+	if !ok {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+		return
+	}
+
+	now := time.Now().UTC()
+	state.SessionState = "initialized"
+	state.LastInitAt = now
+	maxSyncKey := strings.TrimSpace(r.URL.Query().Get("MaxSynckey"))
+	currentSyncKey := strings.TrimSpace(r.URL.Query().Get("CurrentSynckey"))
+	mockResponse := map[string]any{
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"session_state":    state.SessionState,
+		"max_synckey":      maxSyncKey,
+		"current_synckey":  currentSyncKey,
+		"initialized_at":   now.Format(time.RFC3339Nano),
+		"mock_sync_status": "ready",
+	}
+	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-newinit")
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid":            wxid,
+			"max_synckey":     maxSyncKey,
+			"current_synckey": currentSyncKey,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.toMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	s.states.Save(state)
+
+	data := map[string]any{
+		"mode":          "mock",
+		"uuid":          state.UUID,
+		"cache_key":     state.CacheKey,
+		"wxid":          state.Wxid,
+		"session_state": state.SessionState,
+		"login_state":   state.toMap(),
+		"sample_path":   samplePath,
+		"stages": []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_newinit_sync",
+			"persist_login_state",
+			"write_sample",
+		},
+	}
+	for key, value := range mockResponse {
+		data[key] = value
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 登录初始化链路已跑通", RequestID: requestID, Data: data})
+}
+
+func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, requestID string) {
+	wxid := strings.TrimSpace(r.URL.Query().Get("wxid"))
+	if wxid == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
+		return
+	}
+	state, ok := s.states.GetByWxid(wxid)
+	if !ok {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+		return
+	}
+
+	now := time.Now().UTC()
+	state.HeartbeatStatus = "alive"
+	state.HeartbeatCount++
+	state.LastHeartbeatAt = now
+	mockResponse := map[string]any{
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"heartbeat_status": state.HeartbeatStatus,
+		"heartbeat_count":  state.HeartbeatCount,
+		"heartbeat_at":     now.Format(time.RFC3339Nano),
+	}
+	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-heartbeat")
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid": wxid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.toMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	s.states.Save(state)
+
+	data := map[string]any{
+		"mode":             "mock",
+		"uuid":             state.UUID,
+		"cache_key":        state.CacheKey,
+		"wxid":             state.Wxid,
+		"heartbeat_status": state.HeartbeatStatus,
+		"heartbeat_count":  state.HeartbeatCount,
+		"login_state":      state.toMap(),
+		"sample_path":      samplePath,
+		"stages": []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_short_heartbeat",
+			"persist_login_state",
+			"write_sample",
+		},
+	}
+	for key, value := range mockResponse {
+		data[key] = value
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 短心跳链路已跑通", RequestID: requestID, Data: data})
+}
+
 func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request, requestID string) {
 	uuid := strings.TrimSpace(r.URL.Query().Get("uuid"))
 	cacheKey := strings.TrimSpace(r.URL.Query().Get("cache_key"))
@@ -512,38 +660,54 @@ func decodeJSON(body io.Reader, out any) error {
 }
 
 type loginState struct {
-	UUID       string
-	CacheKey   string
-	DeviceID   string
-	DeviceName string
-	Type       string
-	Mode       string
-	LoginKind  string
-	QRStatus   string
-	CheckCount int
-	SamplePath string
-	CreatedAt  time.Time
-	CheckedAt  time.Time
-	Protocol   map[string]any
+	UUID            string
+	CacheKey        string
+	DeviceID        string
+	DeviceName      string
+	Type            string
+	Wxid            string
+	Mode            string
+	LoginKind       string
+	QRStatus        string
+	CheckCount      int
+	SessionState    string
+	HeartbeatStatus string
+	HeartbeatCount  int
+	SamplePath      string
+	CreatedAt       time.Time
+	CheckedAt       time.Time
+	LastInitAt      time.Time
+	LastHeartbeatAt time.Time
+	Protocol        map[string]any
 }
 
 func (s loginState) toMap() map[string]any {
 	m := map[string]any{
-		"uuid":        s.UUID,
-		"cache_key":   s.CacheKey,
-		"device_id":   s.DeviceID,
-		"device_name": s.DeviceName,
-		"type":        s.Type,
-		"mode":        s.Mode,
-		"login_kind":  s.LoginKind,
-		"qr_status":   s.QRStatus,
-		"check_count": s.CheckCount,
-		"sample_path": s.SamplePath,
-		"created_at":  s.CreatedAt.Format(time.RFC3339Nano),
-		"protocol":    s.Protocol,
+		"uuid":             s.UUID,
+		"cache_key":        s.CacheKey,
+		"device_id":        s.DeviceID,
+		"device_name":      s.DeviceName,
+		"type":             s.Type,
+		"wxid":             s.Wxid,
+		"mode":             s.Mode,
+		"login_kind":       s.LoginKind,
+		"qr_status":        s.QRStatus,
+		"check_count":      s.CheckCount,
+		"session_state":    s.SessionState,
+		"heartbeat_status": s.HeartbeatStatus,
+		"heartbeat_count":  s.HeartbeatCount,
+		"sample_path":      s.SamplePath,
+		"created_at":       s.CreatedAt.Format(time.RFC3339Nano),
+		"protocol":         s.Protocol,
 	}
 	if !s.CheckedAt.IsZero() {
 		m["checked_at"] = s.CheckedAt.Format(time.RFC3339Nano)
+	}
+	if !s.LastInitAt.IsZero() {
+		m["last_init_at"] = s.LastInitAt.Format(time.RFC3339Nano)
+	}
+	if !s.LastHeartbeatAt.IsZero() {
+		m["last_heartbeat_at"] = s.LastHeartbeatAt.Format(time.RFC3339Nano)
 	}
 	return m
 }
@@ -552,10 +716,11 @@ type loginStateStore struct {
 	mu      sync.RWMutex
 	byUUID  map[string]loginState
 	byCache map[string]loginState
+	byWxid  map[string]loginState
 }
 
 func newLoginStateStore() *loginStateStore {
-	return &loginStateStore{byUUID: make(map[string]loginState), byCache: make(map[string]loginState)}
+	return &loginStateStore{byUUID: make(map[string]loginState), byCache: make(map[string]loginState), byWxid: make(map[string]loginState)}
 }
 
 func (s *loginStateStore) Save(state loginState) {
@@ -563,6 +728,9 @@ func (s *loginStateStore) Save(state loginState) {
 	defer s.mu.Unlock()
 	s.byUUID[state.UUID] = state
 	s.byCache[state.CacheKey] = state
+	if strings.TrimSpace(state.Wxid) != "" {
+		s.byWxid[state.Wxid] = state
+	}
 }
 
 func (s *loginStateStore) Get(uuid, cacheKey string) (loginState, bool) {
@@ -573,6 +741,13 @@ func (s *loginStateStore) Get(uuid, cacheKey string) (loginState, bool) {
 		return state, ok
 	}
 	state, ok := s.byCache[cacheKey]
+	return state, ok
+}
+
+func (s *loginStateStore) GetByWxid(wxid string) (loginState, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, ok := s.byWxid[wxid]
 	return state, ok
 }
 
