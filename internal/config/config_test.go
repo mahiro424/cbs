@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mahiro424/cbs/internal/config"
@@ -30,6 +32,9 @@ func TestLoadAppConfigKeepsOriginalServiceDefaults(t *testing.T) {
 	if !cfg.LongLinkEnabled {
 		t.Fatalf("LongLinkEnabled = false，期望 true")
 	}
+	if cfg.LoginStateStore != "memory" {
+		t.Fatalf("LoginStateStore = %q，期望默认 memory", cfg.LoginStateStore)
+	}
 }
 
 func TestDefaultConfigIsUsableWithoutFile(t *testing.T) {
@@ -39,5 +44,25 @@ func TestDefaultConfigIsUsableWithoutFile(t *testing.T) {
 	}
 	if cfg.RunMode != "dev" {
 		t.Fatalf("RunMode = %q，期望 dev", cfg.RunMode)
+	}
+	if cfg.LoginStateStore != "memory" {
+		t.Fatalf("LoginStateStore = %q，期望 memory", cfg.LoginStateStore)
+	}
+}
+
+func TestLoadAppConfigCanSelectRedisLoginStateStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.conf")
+	if err := os.WriteFile(path, []byte("loginstatestore = redis\nredislink = 127.0.0.1:6380\nredisdbnum = 8\n"), 0o644); err != nil {
+		t.Fatalf("写入临时配置失败：%v", err)
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatalf("读取配置失败：%v", err)
+	}
+	if cfg.LoginStateStore != "redis" {
+		t.Fatalf("LoginStateStore = %q，期望 redis", cfg.LoginStateStore)
+	}
+	if cfg.RedisLink != "127.0.0.1:6380" || cfg.RedisDBNum != 8 {
+		t.Fatalf("Redis 配置 = %s / %d，期望读取临时配置", cfg.RedisLink, cfg.RedisDBNum)
 	}
 }
