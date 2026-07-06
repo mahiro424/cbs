@@ -1,0 +1,21 @@
+# 所有文本文件按 UTF-8/LF 治理，避免 Windows 默认 GBK/CRLF 造成隐性差异。
+* text=auto eol=lf
+
+*.go text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.conf text eol=lf
+*.py text eol=lf
+*.ps1 text eol=crlf
+
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary
