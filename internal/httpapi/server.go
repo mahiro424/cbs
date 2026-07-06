@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +16,6 @@ import (
 	"github.com/mahiro424/cbs/internal/config"
 	loginpkg "github.com/mahiro424/cbs/internal/login"
 	"github.com/mahiro424/cbs/internal/network"
-	protocolpkg "github.com/mahiro424/cbs/internal/protocol"
 	"github.com/mahiro424/cbs/internal/storage"
 )
 
@@ -298,55 +295,18 @@ func (s *Server) handleLoginData62(w http.ResponseWriter, r *http.Request, reque
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	deviceID := strings.TrimSpace(req.DeviceID)
-	if deviceID == "" {
-		deviceID = "mock-iphone"
-	}
-	deviceName := strings.TrimSpace(req.DeviceName)
-	if deviceName == "" {
-		deviceName = "mock-iphone-name"
-	}
-	wxid := strings.TrimSpace(req.Wxid)
-	if wxid == "" {
-		wxid = "wxid_mock_data62"
-	}
-	requestSample := map[string]any{
-		"data62":      req.Data62,
-		"device_id":   deviceID,
-		"device_name": deviceName,
-		"type":        "iphone",
-		"wxid":        wxid,
-	}
-	if req.Proxy != nil {
-		requestSample["proxy"] = req.Proxy
-	}
-	s.handleMockLogin(w, r.Context(), requestID, mockLoginSpec{
-		SeedParts:  []string{"data62_mock", req.Data62, deviceID, deviceName, wxid},
-		Request:    requestSample,
-		DeviceID:   deviceID,
-		DeviceName: deviceName,
-		Type:       "iphone",
-		Wxid:       wxid,
+	result, err := s.login.Import62Data(r.Context(), loginpkg.Import62DataRequest{
 		Data62:     req.Data62,
-		LoginKind:  "data62_mock",
-		Operation:  "Login.62data",
-		Platform:   "ios",
-		Payload:    req.Data62,
-		MockResponse: map[string]any{
-			"status": "mock_login_ready",
-			"wxid":   wxid,
-		},
-		Stages: []string{
-			"parse_request",
-			"build_login_context",
-			"load_62data_fixture",
-			"hybrid_ecdh_ios_pack_placeholder",
-			"mock_network_response",
-			"persist_login_state",
-			"write_sample",
-		},
-		SuccessMessage: "mock 62data 登录链路已跑通",
+		DeviceID:   req.DeviceID,
+		DeviceName: req.DeviceName,
+		Wxid:       req.Wxid,
+		Proxy:      req.Proxy,
 	})
+	if err != nil {
+		s.writeLoginServiceError(w, requestID, err)
+		return
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 62data 登录链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 type a16LoginRequest struct {
@@ -363,196 +323,18 @@ func (s *Server) handleLoginA16Data(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
 		return
 	}
-	deviceID := strings.TrimSpace(req.DeviceID)
-	if deviceID == "" {
-		deviceID = "mock-android"
-	}
-	deviceName := strings.TrimSpace(req.DeviceName)
-	if deviceName == "" {
-		deviceName = "mock-android-name"
-	}
-	wxid := strings.TrimSpace(req.Wxid)
-	if wxid == "" {
-		wxid = "wxid_mock_a16"
-	}
-	requestSample := map[string]any{
-		"a16":         req.A16,
-		"device_id":   deviceID,
-		"device_name": deviceName,
-		"type":        "android",
-		"wxid":        wxid,
-	}
-	if req.Proxy != nil {
-		requestSample["proxy"] = req.Proxy
-	}
-	s.handleMockLogin(w, r.Context(), requestID, mockLoginSpec{
-		SeedParts:  []string{"a16_mock", req.A16, deviceID, deviceName, wxid},
-		Request:    requestSample,
-		DeviceID:   deviceID,
-		DeviceName: deviceName,
-		Type:       "android",
-		Wxid:       wxid,
+	result, err := s.login.ImportA16Data(r.Context(), loginpkg.ImportA16DataRequest{
 		A16:        req.A16,
-		LoginKind:  "a16_mock",
-		Operation:  "Login.A16Data",
-		Platform:   "android",
-		Payload:    req.A16,
-		MockResponse: map[string]any{
-			"status": "mock_login_ready",
-			"wxid":   wxid,
-		},
-		Stages: []string{
-			"parse_request",
-			"build_login_context",
-			"load_a16_fixture",
-			"hybrid_ecdh_android_pack_placeholder",
-			"mock_network_response",
-			"persist_login_state",
-			"write_sample",
-		},
-		SuccessMessage: "mock A16Data 登录链路已跑通",
-	})
-}
-
-type mockLoginSpec struct {
-	SeedParts      []string
-	Request        map[string]any
-	DeviceID       string
-	DeviceName     string
-	Type           string
-	Wxid           string
-	Data62         string
-	A16            string
-	LoginKind      string
-	Operation      string
-	Platform       string
-	Payload        string
-	MockResponse   map[string]any
-	Stages         []string
-	SuccessMessage string
-}
-
-func (s *Server) handleMockLogin(w http.ResponseWriter, ctx context.Context, requestID string, spec mockLoginSpec) {
-	seed := strings.Join(spec.SeedParts, "|")
-	if strings.Trim(seed, "|") == "" {
-		seed = spec.LoginKind + "|anonymous-device"
-	}
-	sum := sha256.Sum256([]byte(seed))
-	uuid := "mock-" + hex.EncodeToString(sum[:])[:24]
-	cacheKey := "login:mock:" + uuid
-	operation := strings.TrimSpace(spec.Operation)
-	if operation == "" {
-		operation = spec.LoginKind
-	}
-	hybrid, _, err := protocolpkg.HybridECDHPack(protocolpkg.HybridRequest{
-		Platform:  spec.Platform,
-		Operation: operation,
-		Payload:   []byte(spec.Payload),
-		DeviceID:  spec.DeviceID,
-		LoginKind: spec.LoginKind,
+		DeviceID:   req.DeviceID,
+		DeviceName: req.DeviceName,
+		Wxid:       req.Wxid,
+		Proxy:      req.Proxy,
 	})
 	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+		s.writeLoginServiceError(w, requestID, err)
 		return
 	}
-	protocol := protocolTraceFromHybrid(hybrid, spec.LoginKind)
-	networkTrace, err := s.sendLoginNetwork(ctx, operation, spec.LoginKind, hybrid.Platform, hybrid, map[string]string{
-		"device_id": spec.DeviceID,
-		"type":      spec.Type,
-		"wxid":      spec.Wxid,
-	})
-	if err != nil {
-		s.writeNetworkError(w, requestID, err)
-		return
-	}
-	mockResponse := map[string]any{
-		"uuid":      uuid,
-		"cache_key": cacheKey,
-	}
-	for key, value := range spec.MockResponse {
-		mockResponse[key] = value
-	}
-	state := storage.LoginState{
-		UUID:       uuid,
-		CacheKey:   cacheKey,
-		DeviceID:   spec.DeviceID,
-		DeviceName: spec.DeviceName,
-		Type:       spec.Type,
-		Wxid:       spec.Wxid,
-		Data62:     spec.Data62,
-		A16:        spec.A16,
-		Mode:       "mock",
-		LoginKind:  spec.LoginKind,
-		CreatedAt:  time.Now().UTC(),
-		Protocol:   protocol,
-	}
-	samplePath, err := sampleFilePath(s.cfg.SampleDir, uuid)
-	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	state.SamplePath = samplePath
-	sample := map[string]any{
-		"request":       spec.Request,
-		"protocol":      protocol,
-		"network":       networkTrace,
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
-	}
-	if err := writeSample(samplePath, sample); err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	if err := s.states.Save(ctx, state); err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
-
-	data := map[string]any{
-		"mode":        "mock",
-		"uuid":        uuid,
-		"cache_key":   cacheKey,
-		"device_id":   spec.DeviceID,
-		"device_name": spec.DeviceName,
-		"type":        spec.Type,
-		"protocol":    protocol,
-		"network":     networkTrace,
-		"login_state": state.ToMap(),
-		"sample_path": samplePath,
-		"stages":      spec.Stages,
-	}
-	for key, value := range mockResponse {
-		data[key] = value
-	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
-}
-
-func protocolTraceFromHybrid(hybrid protocolpkg.HybridPacket, loginKind string) map[string]any {
-	return map[string]any{
-		"pack_kind":      hybrid.PackKind,
-		"platform":       hybrid.Platform,
-		"login_kind":     loginKind,
-		"operation":      hybrid.Operation,
-		"payload_sha256": hybrid.PayloadSHA256,
-		"payload_length": hybrid.PayloadLength,
-		"input_length":   hybrid.PayloadLength,
-		"packed_hex":     hybrid.PackedHex,
-		"debug":          hybrid.Debug,
-	}
-}
-
-func (s *Server) sendLoginNetwork(ctx context.Context, operation string, loginKind string, platform string, hybrid protocolpkg.HybridPacket, metadata map[string]string) (map[string]any, error) {
-	resp, err := s.network.Send(ctx, network.Request{
-		Operation: operation,
-		LoginKind: loginKind,
-		Platform:  platform,
-		Payload:   []byte(hybrid.PackedHex),
-		Metadata:  metadata,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return resp.ToMap(), nil
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock A16Data 登录链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requestID string) {
