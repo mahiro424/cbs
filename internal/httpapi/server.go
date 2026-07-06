@@ -13,6 +13,7 @@ import (
 
 	"github.com/mahiro424/cbs/internal/config"
 	loginpkg "github.com/mahiro424/cbs/internal/login"
+	messagepkg "github.com/mahiro424/cbs/internal/message"
 	"github.com/mahiro424/cbs/internal/network"
 	"github.com/mahiro424/cbs/internal/storage"
 )
@@ -28,6 +29,7 @@ type Server struct {
 	netMode   string
 	netErr    error
 	login     *loginpkg.Service
+	message   *messagepkg.Service
 	seq       atomic.Uint64
 }
 
@@ -36,6 +38,7 @@ func NewServer(cfg config.Config) *Server {
 	netClient, netMode, netErr := network.NewClient(network.Config{Mode: cfg.NetworkMode})
 	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: states, stateMode: stateMode, stateErr: stateErr, network: netClient, netMode: netMode, netErr: netErr}
 	s.login = loginpkg.NewService(loginpkg.Dependencies{States: states, Network: netClient, SampleDir: cfg.SampleDir})
+	s.message = messagepkg.NewService(messagepkg.Dependencies{States: states, Network: netClient, SampleDir: cfg.SampleDir})
 	for _, route := range AllRoutes() {
 		method := strings.ToUpper(route.Method)
 		route.Method = method
@@ -108,6 +111,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if route.Path == "/Login/LogOut" {
 		s.handleLoginLogOut(w, r, requestID)
+		return
+	}
+	if route.Path == "/Msg/SendTxt" {
+		s.handleMsgSendTxt(w, r, requestID)
 		return
 	}
 	s.write(w, http.StatusOK, Envelope{Success: false, Code: "not_implemented", Message: "接口已接入但未实现", RequestID: requestID, Data: map[string]any{"path": route.Path, "method": route.Method, "module": route.Module, "operation": route.Operation}})
@@ -185,6 +192,27 @@ func (s *Server) writeLoginServiceError(w http.ResponseWriter, requestID string,
 		s.writeLoginStateStoreError(w, requestID, err)
 	default:
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "login_error", Message: err.Error(), RequestID: requestID})
+	}
+}
+
+func (s *Server) writeMessageServiceError(w http.ResponseWriter, requestID string, err error) {
+	switch {
+	case errors.Is(err, messagepkg.ErrLoginStateNotFound):
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+	case errors.Is(err, messagepkg.ErrSessionLoggedOut):
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID})
+	case errors.Is(err, messagepkg.ErrStateStore):
+		s.writeLoginStateStoreError(w, requestID, err)
+	case errors.Is(err, messagepkg.ErrProtocolPack):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, messagepkg.ErrNetwork):
+		s.write(w, http.StatusBadGateway, Envelope{Success: false, Code: "network_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, messagepkg.ErrSamplePath):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, messagepkg.ErrSampleWrite):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+	default:
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "message_error", Message: err.Error(), RequestID: requestID})
 	}
 }
 
@@ -385,6 +413,46 @@ func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "已读取登录态", RequestID: requestID, Data: state.ToMap()})
+}
+
+type sendTextRequest struct {
+	Wxid    string `json:"Wxid"`
+	ToWxid  string `json:"ToWxid"`
+	Content string `json:"Content"`
+	Type    int64  `json:"Type"`
+	At      string `json:"At"`
+}
+
+func (s *Server) handleMsgSendTxt(w http.ResponseWriter, r *http.Request, requestID string) {
+	var req sendTextRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	if strings.TrimSpace(req.Wxid) == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 Wxid", RequestID: requestID})
+		return
+	}
+	if strings.TrimSpace(req.ToWxid) == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 ToWxid", RequestID: requestID})
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 Content", RequestID: requestID})
+		return
+	}
+	result, err := s.message.SendText(r.Context(), messagepkg.SendTextRequest{
+		Wxid:    req.Wxid,
+		ToWxid:  req.ToWxid,
+		Content: req.Content,
+		Type:    req.Type,
+		At:      req.At,
+	})
+	if err != nil {
+		s.writeMessageServiceError(w, requestID, err)
+		return
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 文本消息发送链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func decodeJSON(body io.Reader, out any) error {
