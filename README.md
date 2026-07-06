@@ -13,6 +13,7 @@
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
 - 提供 `internal/protocol` mock-first Pack / Unpack、Hybrid ECDH iOS / Android、AES-GCM 解包和二进制调试入口，用于后续真实协议对拍替换。
 - 提供 `internal/network` mock/real 网络层接缝；默认 mock 不访问真实服务端，real 当前返回稳定未就绪错误。
+- 提供 `internal/riskalgo` 高风险算法待补齐计划边界；Sae、ZT、反垃圾和 CC 数据当前以 `sample_required` 摘要进入登录链路，后续可按样本替换真实实现。
 - 提供 `internal/login` 登录业务层接缝；`/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 已下沉为业务层 tracer bullet。
 
 ## 运行
@@ -222,6 +223,22 @@ go test ./internal/protocol -count=1
 - `debug`：帧头、长度和 CRC 摘要。
 
 登录 mock 链路中的 `/Login/GetQR`、`/Login/62data`、`/Login/A16Data` 已改为通过该模块生成 `protocol` 摘要，避免 Hybrid 占位逻辑散落在 HTTP 控制器中。
+
+## 当前高风险算法待补齐边界
+
+`internal/riskalgo` 用于隔离 Sae、ZT、反垃圾数据和 Android CC 数据等高风险自定义算法。当前没有足够真实样本时，它不会伪造最终算法结果，而是返回稳定的 `sample_required` 计划，列出需要补充的样本路径、组件类别和后续替换步骤。
+
+当前登录链路接入情况：
+
+- `/Login/62data` 会在响应、登录态和样本中写入 iOS 侧 `sae_encrypt_01`、`sae_encrypt_06`、`do_encrypt_input`、`iphone_antispam` 待补齐摘要。
+- `/Login/A16Data` 会在响应、登录态和样本中写入 Android 侧 `zt_init`、`zt_encrypt`、`android_antispam`、`android_cc_data` 待补齐摘要。
+- 摘要字段统一为 `risk_algorithms`，状态为 `sample_required`，不会阻断 mock-first 登录主链路。
+
+可单独运行高风险算法边界测试：
+
+```powershell
+go test ./internal/riskalgo -count=1
+```
 
 可单独运行 Hybrid 协议测试：
 

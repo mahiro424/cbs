@@ -159,6 +159,13 @@ func TestLoginData62AndA16MockPathsPersistStateAndSamples(t *testing.T) {
 			if mustString(t, protocol, "packed_hex") == "" {
 				t.Fatalf("protocol.packed_hex 不能为空：%+v", protocol)
 			}
+			risk := mustMap(t, data["risk_algorithms"])
+			if risk["status"] != "sample_required" || risk["ready"] != false || risk["platform"] != tc.platform || risk["login_kind"] != tc.loginKind {
+				t.Fatalf("risk_algorithms = %+v，期望高风险算法摘要进入响应", risk)
+			}
+			if protocol["risk_algorithms"] == nil {
+				t.Fatalf("protocol = %+v，期望同时包含 risk_algorithms", protocol)
+			}
 			debug := mustMap(t, protocol["debug"])
 			if debug["magic"] != "CBS1" || debug["payload_length"] == nil {
 				t.Fatalf("protocol.debug = %+v，期望包含 CBS1 mock 帧摘要", debug)
@@ -166,6 +173,10 @@ func TestLoginData62AndA16MockPathsPersistStateAndSamples(t *testing.T) {
 			loginState := mustMap(t, data["login_state"])
 			if loginState["uuid"] != uuid || loginState["cache_key"] != cacheKey || loginState["login_kind"] != tc.loginKind {
 				t.Fatalf("login_state = %+v，期望包含本次 uuid/cache_key/login_kind", loginState)
+			}
+			stateProtocol := mustMap(t, loginState["protocol"])
+			if stateProtocol["risk_algorithms"] == nil {
+				t.Fatalf("login_state.protocol = %+v，期望登录态保存高风险算法摘要", stateProtocol)
 			}
 
 			sampleRaw, err := os.ReadFile(samplePath)
@@ -176,7 +187,7 @@ func TestLoginData62AndA16MockPathsPersistStateAndSamples(t *testing.T) {
 			if err := json.Unmarshal(sampleRaw, &sample); err != nil {
 				t.Fatalf("样本不是 JSON：%v", err)
 			}
-			for _, key := range []string{"request", "protocol", "mock_response", "login_state"} {
+			for _, key := range []string{"request", "protocol", "risk_algorithms", "mock_response", "login_state"} {
 				if _, ok := sample[key]; !ok {
 					t.Fatalf("样本缺少字段 %s：%+v", key, sample)
 				}
