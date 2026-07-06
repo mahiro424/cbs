@@ -117,6 +117,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleMsgSendTxt(w, r, requestID)
 		return
 	}
+	if route.Path == "/Msg/Sync" {
+		s.handleMsgSync(w, r, requestID)
+		return
+	}
 	s.write(w, http.StatusOK, Envelope{Success: false, Code: "not_implemented", Message: "接口已接入但未实现", RequestID: requestID, Data: map[string]any{"path": route.Path, "method": route.Method, "module": route.Module, "operation": route.Operation}})
 }
 
@@ -453,6 +457,34 @@ func (s *Server) handleMsgSendTxt(w http.ResponseWriter, r *http.Request, reques
 		return
 	}
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 文本消息发送链路已跑通", RequestID: requestID, Data: result.ResponseData()})
+}
+
+type syncRequest struct {
+	Wxid    string `json:"Wxid"`
+	Scene   int32  `json:"Scene"`
+	Synckey string `json:"Synckey"`
+}
+
+func (s *Server) handleMsgSync(w http.ResponseWriter, r *http.Request, requestID string) {
+	var req syncRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	if strings.TrimSpace(req.Wxid) == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 Wxid", RequestID: requestID})
+		return
+	}
+	result, err := s.message.Sync(r.Context(), messagepkg.SyncRequest{
+		Wxid:    req.Wxid,
+		Scene:   req.Scene,
+		Synckey: req.Synckey,
+	})
+	if err != nil {
+		s.writeMessageServiceError(w, requestID, err)
+		return
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 消息同步链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func decodeJSON(body io.Reader, out any) error {
