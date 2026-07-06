@@ -66,6 +66,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLoginGetQR(w, r, requestID)
 		return
 	}
+	if route.Path == "/Login/CheckQR" {
+		s.handleLoginCheckQR(w, r, requestID)
+		return
+	}
 	if route.Path == "/Login/62data" {
 		s.handleLoginData62(w, r, requestID)
 		return
@@ -135,9 +139,10 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		"input_length":   len(seed),
 	}
 	mockResponse := map[string]any{
-		"uuid":   uuid,
-		"qr_url": "mock://login/" + uuid,
-		"status": "waiting_scan",
+		"uuid":      uuid,
+		"qr_url":    "mock://login/" + uuid,
+		"status":    "waiting_scan",
+		"qr_status": "waiting_scan",
 	}
 	state := loginState{
 		UUID:       uuid,
@@ -147,6 +152,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		Type:       deviceType,
 		Mode:       "mock",
 		LoginKind:  "getqr_mock",
+		QRStatus:   "waiting_scan",
 		CreatedAt:  time.Now().UTC(),
 		Protocol:   protocol,
 	}
@@ -194,6 +200,74 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		},
 	}
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码链路已跑通", RequestID: requestID, Data: data})
+}
+
+func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requestID string) {
+	uuid := strings.TrimSpace(r.URL.Query().Get("uuid"))
+	if uuid == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 uuid", RequestID: requestID})
+		return
+	}
+	state, ok := s.states.Get(uuid, "")
+	if !ok {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到二维码登录态", RequestID: requestID})
+		return
+	}
+	if state.LoginKind != "getqr_mock" {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID, Data: state.toMap()})
+		return
+	}
+
+	checkedAt := time.Now().UTC()
+	state.QRStatus = "waiting_scan"
+	state.CheckCount++
+	state.CheckedAt = checkedAt
+	mockResponse := map[string]any{
+		"uuid":        state.UUID,
+		"cache_key":   state.CacheKey,
+		"status":      state.QRStatus,
+		"qr_status":   state.QRStatus,
+		"checked_at":  checkedAt.Format(time.RFC3339Nano),
+		"check_count": state.CheckCount,
+	}
+	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-checkqr")
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"uuid": uuid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.toMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	s.states.Save(state)
+
+	data := map[string]any{
+		"mode":        "mock",
+		"uuid":        state.UUID,
+		"cache_key":   state.CacheKey,
+		"qr_status":   state.QRStatus,
+		"login_state": state.toMap(),
+		"sample_path": samplePath,
+		"stages": []string{
+			"parse_request",
+			"load_qr_login_state",
+			"mock_poll_qr_status",
+			"persist_login_state",
+			"write_sample",
+		},
+	}
+	for key, value := range mockResponse {
+		data[key] = value
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码检查链路已跑通", RequestID: requestID, Data: data})
 }
 
 type data62LoginRequest struct {
@@ -445,13 +519,16 @@ type loginState struct {
 	Type       string
 	Mode       string
 	LoginKind  string
+	QRStatus   string
+	CheckCount int
 	SamplePath string
 	CreatedAt  time.Time
+	CheckedAt  time.Time
 	Protocol   map[string]any
 }
 
 func (s loginState) toMap() map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"uuid":        s.UUID,
 		"cache_key":   s.CacheKey,
 		"device_id":   s.DeviceID,
@@ -459,10 +536,16 @@ func (s loginState) toMap() map[string]any {
 		"type":        s.Type,
 		"mode":        s.Mode,
 		"login_kind":  s.LoginKind,
+		"qr_status":   s.QRStatus,
+		"check_count": s.CheckCount,
 		"sample_path": s.SamplePath,
 		"created_at":  s.CreatedAt.Format(time.RFC3339Nano),
 		"protocol":    s.Protocol,
 	}
+	if !s.CheckedAt.IsZero() {
+		m["checked_at"] = s.CheckedAt.Format(time.RFC3339Nano)
+	}
+	return m
 }
 
 type loginStateStore struct {

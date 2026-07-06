@@ -192,3 +192,75 @@ func TestLoginData62AndA16MockPathsPersistStateAndSamples(t *testing.T) {
 		})
 	}
 }
+
+func TestLoginCheckQRMockPathReadsAndUpdatesGetQRState(t *testing.T) {
+	cfg := config.Default()
+	cfg.SampleDir = t.TempDir()
+	h := httpapi.NewServer(cfg)
+
+	qr := postJSON(t, h, "/Login/GetQR", `{"DeviceID":"qr-dev-001","DeviceName":"扫码样本设备","Type":"ipad"}`)
+	if !qr.Success || qr.Code != "ok" {
+		t.Fatalf("GetQR 响应 = %+v，期望 ok", qr)
+	}
+	qrData := mustMap(t, qr.Data)
+	uuid := mustString(t, qrData, "uuid")
+	cacheKey := mustString(t, qrData, "cache_key")
+
+	missingUUID := postJSON(t, h, "/Login/CheckQR", `{}`)
+	if missingUUID.Success || missingUUID.Code != "param_error" {
+		t.Fatalf("缺少 uuid 响应 = %+v，期望 param_error", missingUUID)
+	}
+
+	notFound := postJSON(t, h, "/Login/CheckQR?uuid=mock-not-exists", `{}`)
+	if notFound.Success || notFound.Code != "cache_not_found" {
+		t.Fatalf("不存在 uuid 响应 = %+v，期望 cache_not_found", notFound)
+	}
+
+	check := postJSON(t, h, "/Login/CheckQR?uuid="+uuid, `{}`)
+	if !check.Success || check.Code != "ok" {
+		t.Fatalf("CheckQR 响应 = %+v，期望 ok", check)
+	}
+	data := mustMap(t, check.Data)
+	if data["uuid"] != uuid || data["cache_key"] != cacheKey || data["qr_status"] != "waiting_scan" {
+		t.Fatalf("CheckQR data = %+v，期望包含本次 uuid/cache_key/waiting_scan", data)
+	}
+	if _, ok := data["stages"].([]any); !ok {
+		t.Fatalf("CheckQR stages = %#v，期望数组", data["stages"])
+	}
+	samplePath := mustString(t, data, "sample_path")
+	loginState := mustMap(t, data["login_state"])
+	if loginState["uuid"] != uuid || loginState["login_kind"] != "getqr_mock" || loginState["qr_status"] != "waiting_scan" {
+		t.Fatalf("CheckQR login_state = %+v，期望包含 getqr_mock waiting_scan 状态", loginState)
+	}
+
+	sampleRaw, err := os.ReadFile(samplePath)
+	if err != nil {
+		t.Fatalf("读取 CheckQR 样本失败：%v", err)
+	}
+	var sample map[string]any
+	if err := json.Unmarshal(sampleRaw, &sample); err != nil {
+		t.Fatalf("CheckQR 样本不是 JSON：%v", err)
+	}
+	for _, key := range []string{"request", "mock_response", "login_state"} {
+		if _, ok := sample[key]; !ok {
+			t.Fatalf("CheckQR 样本缺少字段 %s：%+v", key, sample)
+		}
+	}
+	request := mustMap(t, sample["request"])
+	if request["uuid"] != uuid {
+		t.Fatalf("CheckQR 样本 request = %+v，期望记录 uuid", request)
+	}
+	mockResponse := mustMap(t, sample["mock_response"])
+	if mockResponse["qr_status"] != "waiting_scan" {
+		t.Fatalf("CheckQR 样本 mock_response = %+v，期望 waiting_scan", mockResponse)
+	}
+
+	byUUID := postJSON(t, h, "/Login/GetCacheInfo?uuid="+uuid, `{}`)
+	if !byUUID.Success || byUUID.Code != "ok" {
+		t.Fatalf("按 uuid 查询响应 = %+v，期望 ok", byUUID)
+	}
+	stateByUUID := mustMap(t, byUUID.Data)
+	if stateByUUID["uuid"] != uuid || stateByUUID["qr_status"] != "waiting_scan" || stateByUUID["sample_path"] != samplePath {
+		t.Fatalf("按 uuid 查询结果 = %+v，期望反映最近一次 CheckQR 状态", stateByUUID)
+	}
+}
