@@ -1,5 +1,29 @@
 # cbs_rebuild Agent 入口
 
+## 运行前必读：先固定 UTF-8
+
+本仓库和父级研究素材混用过 Windows GBK/GB18030 与 UTF-8。任何 Agent 在执行命令、读取文件、写入文档或运行测试前，必须先进入 UTF-8 会话；否则会把中文内容读成乱码，甚至把乱码重新写回文件。
+
+- 位于 `F:\yanjiu\cbs_rebuild` 或其子目录时，第一条命令必须先执行：
+
+```powershell
+. .\scripts\enter-utf8.ps1
+```
+
+- 位于父级 `F:\yanjiu` 时，先执行父级入口：
+
+```powershell
+. .\scripts\enter-utf8.ps1
+```
+
+- 如果需要处理历史 GBK/GB18030 文本，先预演再转换：
+
+```powershell
+python .\cbs_rebuild\scripts\normalize_encoding.py F:\yanjiu --limit 20
+python .\cbs_rebuild\scripts\normalize_encoding.py F:\yanjiu --write
+python .\cbs_rebuild\scripts\check_encoding.py F:\yanjiu
+```
+
 ## Agent skills
 
 ### Issue 跟踪器
@@ -16,7 +40,7 @@
 
 ## 编码与终端规范
 
-本项目在 Windows/PowerShell 环境中必须优先防止 GBK、ANSI、ASCII 与 UTF-8 混用导致的中文乱码。每次开始执行命令前，先完成以下动作：
+本项目在 Windows/PowerShell 环境中必须优先防止 GBK、GB18030、ANSI、ASCII 与 UTF-8 混用导致的中文乱码。每次开始执行命令前，先完成以下动作：
 
 1. 如果当前目录是 `F:\yanjiu\cbs_rebuild` 或其子目录，先执行：
 

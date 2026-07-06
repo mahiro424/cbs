@@ -15,10 +15,28 @@
 
 ## 运行
 
+Windows / PowerShell 下先进入 UTF-8 会话：
+
+```powershell
+. .\scripts\enter-utf8.ps1
+```
+
 ```powershell
 go test ./...
 go run ./cmd/server -config conf/app.conf
 ```
+
+## 编码治理
+
+仓库默认使用 UTF-8。若需要处理父级 `F:\yanjiu` 中的历史 GBK/GB18030 文本，先预演、再转换、最后检查：
+
+```powershell
+python .\scripts\normalize_encoding.py F:\yanjiu --limit 20
+python .\scripts\normalize_encoding.py F:\yanjiu --write
+python .\scripts\check_encoding.py F:\yanjiu
+```
+
+转换脚本会把原始字节备份到 `F:\yanjiu\.encoding-backups\<时间戳>\`，再将文本写回为 UTF-8。
 
 健康检查：
 

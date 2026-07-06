@@ -1,5 +1,7 @@
-﻿# 构建产物和临时文件
+# 构建产物和临时文件
 .scratch/
+.encoding-backups/
+__pycache__/
 *.exe
 *.log
 
