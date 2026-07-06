@@ -1,6 +1,7 @@
 package storage_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -67,6 +68,7 @@ func TestLoginStateJSONRoundTripPreservesFieldsAndKeyPlan(t *testing.T) {
 
 func TestMemoryLoginStateStoreSavesReadsAndUpdatesByIndexes(t *testing.T) {
 	store := storage.NewMemoryLoginStateStore()
+	ctx := context.Background()
 	state := storage.LoginState{
 		UUID:         "mock-uuid-002",
 		CacheKey:     "login:mock:mock-uuid-002",
@@ -76,26 +78,30 @@ func TestMemoryLoginStateStoreSavesReadsAndUpdatesByIndexes(t *testing.T) {
 		SessionState: "initialized",
 		CreatedAt:    time.Date(2026, 7, 6, 13, 0, 0, 0, time.UTC),
 	}
-	store.Save(state)
+	if err := store.Save(ctx, state); err != nil {
+		t.Fatalf("Save 返回错误：%v", err)
+	}
 
-	byUUID, ok := store.Get("mock-uuid-002", "")
-	if !ok || byUUID.CacheKey != state.CacheKey || byUUID.Wxid != state.Wxid {
-		t.Fatalf("按 uuid 读取 = %+v / %v，期望读回登录态", byUUID, ok)
+	byUUID, ok, err := store.Get(ctx, "mock-uuid-002", "")
+	if err != nil || !ok || byUUID.CacheKey != state.CacheKey || byUUID.Wxid != state.Wxid {
+		t.Fatalf("按 uuid 读取 = %+v / %v / %v，期望读回登录态", byUUID, ok, err)
 	}
-	byCache, ok := store.Get("", state.CacheKey)
-	if !ok || byCache.UUID != state.UUID {
-		t.Fatalf("按 cache_key 读取 = %+v / %v，期望读回登录态", byCache, ok)
+	byCache, ok, err := store.Get(ctx, "", state.CacheKey)
+	if err != nil || !ok || byCache.UUID != state.UUID {
+		t.Fatalf("按 cache_key 读取 = %+v / %v / %v，期望读回登录态", byCache, ok, err)
 	}
-	byWxid, ok := store.GetByWxid(state.Wxid)
-	if !ok || byWxid.UUID != state.UUID {
-		t.Fatalf("按 wxid 读取 = %+v / %v，期望读回登录态", byWxid, ok)
+	byWxid, ok, err := store.GetByWxid(ctx, state.Wxid)
+	if err != nil || !ok || byWxid.UUID != state.UUID {
+		t.Fatalf("按 wxid 读取 = %+v / %v / %v，期望读回登录态", byWxid, ok, err)
 	}
 
 	state.HeartbeatStatus = "alive"
 	state.HeartbeatCount = 3
-	store.Save(state)
-	updated, ok := store.GetByWxid(state.Wxid)
-	if !ok || updated.HeartbeatStatus != "alive" || updated.HeartbeatCount != 3 {
-		t.Fatalf("更新后登录态 = %+v / %v，期望覆盖旧状态", updated, ok)
+	if err := store.Save(ctx, state); err != nil {
+		t.Fatalf("更新 Save 返回错误：%v", err)
+	}
+	updated, ok, err := store.GetByWxid(ctx, state.Wxid)
+	if err != nil || !ok || updated.HeartbeatStatus != "alive" || updated.HeartbeatCount != 3 {
+		t.Fatalf("更新后登录态 = %+v / %v / %v，期望覆盖旧状态", updated, ok, err)
 	}
 }

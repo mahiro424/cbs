@@ -119,7 +119,7 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 
 ## 当前登录态存储边界
 
-`internal/storage` 提供 `LoginState`、`EncodeLoginState`、`DecodeLoginState` 和 `MemoryLoginStateStore`。当前登录 mock 链路已经通过该 storage 边界保存、读取和更新登录态，不再在 HTTP 控制器内维护私有登录态结构。
+`internal/storage` 提供 `LoginState`、`EncodeLoginState`、`DecodeLoginState`、`LoginStateStore`、`MemoryLoginStateStore` 和 `RedisLoginStateStore`。当前登录 mock 链路已经通过 `LoginStateStore` 边界保存、读取和更新登录态，不再在 HTTP 控制器内维护私有登录态结构。
 
 当前 storage 边界覆盖：
 
@@ -127,12 +127,15 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 - `uuid` 主键读取；
 - `cache_key` 索引读取；
 - `wxid` 索引读取；
-- Redis key 规划：
+- Redis key 规划与 Redis backend 独立读写：
   - `login:state:<uuid>`
   - `login:index:cache:<cache_key>`
   - `login:index:wxid:<wxid>`
+- Redis 登录态 backend 支持可选 `AUTH`、`SELECT <db>`、`SET` 主状态、`SET` cache/wxid 索引，以及 `GET` 主状态或索引后再回读主状态；
+- Redis 不可连接会返回可用 `errors.Is(err, storage.ErrRedisUnavailable)` 判断的稳定错误，Redis 返回 `-ERR` / `-NOAUTH` 会返回可用 `errors.Is(err, storage.ErrRedisCommandFailed)` 判断的稳定错误；
+- Redis backend 测试使用进程内 fake Redis 夹具，不依赖真实 Redis 实例。
 
-真实 Redis backend 仍待后续切片接入；当前 `MemoryLoginStateStore` 用于 mock-first 本地链路和测试接缝。
+当前 HTTP 默认仍使用 `MemoryLoginStateStore`，Redis backend 已可在 storage 层独立测试；后续切片再接入配置化切换与真实运行环境验证。
 
 ## 当前协议封包 mock 帧
 
