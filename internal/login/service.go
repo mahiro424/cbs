@@ -88,6 +88,10 @@ type ExportLoginDataRequest struct {
 	Wxid string
 }
 
+type LogOutRequest struct {
+	Wxid string
+}
+
 type GetQRResult struct {
 	Mode         string
 	UUID         string
@@ -148,6 +152,19 @@ type ExportLoginDataResult struct {
 	SamplePath    string
 	MockResponse  map[string]any
 	Stages        []string
+}
+
+type LogOutResult struct {
+	Mode         string
+	UUID         string
+	CacheKey     string
+	Wxid         string
+	LogoutStatus string
+	LoggedOutAt  time.Time
+	State        storage.LoginState
+	SamplePath   string
+	MockResponse map[string]any
+	Stages       []string
 }
 
 type Import62DataRequest struct {
@@ -268,6 +285,24 @@ func (r ExportLoginDataResult) ResponseData() map[string]any {
 	}
 	if r.ResponseField != "" {
 		data[r.ResponseField] = r.Payload
+	}
+	for key, value := range r.MockResponse {
+		data[key] = value
+	}
+	return data
+}
+
+func (r LogOutResult) ResponseData() map[string]any {
+	data := map[string]any{
+		"mode":          r.Mode,
+		"uuid":          r.UUID,
+		"cache_key":     r.CacheKey,
+		"wxid":          r.Wxid,
+		"logout_status": r.LogoutStatus,
+		"logged_out_at": r.LoggedOutAt.Format(time.RFC3339Nano),
+		"login_state":   r.State.ToMap(),
+		"sample_path":   r.SamplePath,
+		"stages":        r.Stages,
 	}
 	for key, value := range r.MockResponse {
 		data[key] = value
@@ -688,6 +723,64 @@ func (s *Service) exportLoginData(ctx context.Context, spec exportLoginDataSpec)
 		SamplePath:    samplePath,
 		MockResponse:  mockResponse,
 		Stages:        spec.Stages,
+	}, nil
+}
+
+func (s *Service) LogOut(ctx context.Context, req LogOutRequest) (LogOutResult, error) {
+	wxid := strings.TrimSpace(req.Wxid)
+	state, ok, err := s.states.GetByWxid(ctx, wxid)
+	if err != nil {
+		return LogOutResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	if !ok {
+		return LogOutResult{}, fmt.Errorf("%w: %s", ErrWxidLoginStateNotFound, wxid)
+	}
+	now := s.now().UTC()
+	state.SessionState = "logged_out"
+	state.LogoutStatus = "logged_out"
+	state.LoggedOutAt = now
+	mockResponse := map[string]any{
+		"uuid":          state.UUID,
+		"cache_key":     state.CacheKey,
+		"wxid":          state.Wxid,
+		"logout_status": state.LogoutStatus,
+		"logged_out_at": now.Format(time.RFC3339Nano),
+	}
+	samplePath, err := sampleFilePath(s.sampleDir, state.UUID+"-logout")
+	if err != nil {
+		return LogOutResult{}, fmt.Errorf("%w: %v", ErrSamplePath, err)
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid": wxid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.ToMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		return LogOutResult{}, fmt.Errorf("%w: %v", ErrSampleWrite, err)
+	}
+	if err := s.states.Save(ctx, state); err != nil {
+		return LogOutResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	return LogOutResult{
+		Mode:         "mock",
+		UUID:         state.UUID,
+		CacheKey:     state.CacheKey,
+		Wxid:         state.Wxid,
+		LogoutStatus: state.LogoutStatus,
+		LoggedOutAt:  now,
+		State:        state,
+		SamplePath:   samplePath,
+		MockResponse: mockResponse,
+		Stages: []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_logout",
+			"persist_login_state",
+			"write_sample",
+		},
 	}, nil
 }
 
