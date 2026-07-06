@@ -121,6 +121,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleMsgSync(w, r, requestID)
 		return
 	}
+	if route.Path == "/Msg/Revoke" {
+		s.handleMsgRevoke(w, r, requestID)
+		return
+	}
 	s.write(w, http.StatusOK, Envelope{Success: false, Code: "not_implemented", Message: "接口已接入但未实现", RequestID: requestID, Data: map[string]any{"path": route.Path, "method": route.Method, "module": route.Module, "operation": route.Operation}})
 }
 
@@ -485,6 +489,54 @@ func (s *Server) handleMsgSync(w http.ResponseWriter, r *http.Request, requestID
 		return
 	}
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 消息同步链路已跑通", RequestID: requestID, Data: result.ResponseData()})
+}
+
+type revokeRequest struct {
+	Wxid        string `json:"Wxid"`
+	ToUserName  string `json:"ToUserName"`
+	NewMsgID    int64  `json:"NewMsgId"`
+	ClientMsgID int64  `json:"ClientMsgId"`
+	CreateTime  int64  `json:"CreateTime"`
+}
+
+func (s *Server) handleMsgRevoke(w http.ResponseWriter, r *http.Request, requestID string) {
+	var req revokeRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	if strings.TrimSpace(req.Wxid) == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 Wxid", RequestID: requestID})
+		return
+	}
+	if strings.TrimSpace(req.ToUserName) == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 ToUserName", RequestID: requestID})
+		return
+	}
+	if req.NewMsgID == 0 {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 NewMsgId", RequestID: requestID})
+		return
+	}
+	if req.ClientMsgID == 0 {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 ClientMsgId", RequestID: requestID})
+		return
+	}
+	if req.CreateTime == 0 {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 CreateTime", RequestID: requestID})
+		return
+	}
+	result, err := s.message.Revoke(r.Context(), messagepkg.RevokeRequest{
+		Wxid:        req.Wxid,
+		ToUserName:  req.ToUserName,
+		NewMsgID:    req.NewMsgID,
+		ClientMsgID: req.ClientMsgID,
+		CreateTime:  req.CreateTime,
+	})
+	if err != nil {
+		s.writeMessageServiceError(w, requestID, err)
+		return
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 消息撤回链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 func decodeJSON(body io.Reader, out any) error {
