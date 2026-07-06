@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Config ???? main.exe app.conf ????????
+// Config 保存与原 main.exe app.conf 兼容的核心配置。
 type Config struct {
 	AppName         string
 	HTTPAddr        string
@@ -26,9 +26,10 @@ type Config struct {
 	SessionName     string
 	ServerName      string
 	LongLinkEnabled bool
+	SampleDir       string
 }
 
-// Default ?????????????????????????
+// Default 返回原服务常见默认值，确保缺少配置文件时仍可启动。
 func Default() Config {
 	return Config{
 		AppName:         "wxapi",
@@ -47,10 +48,11 @@ func Default() Config {
 		SessionName:     "wxapi",
 		ServerName:      "wxapi",
 		LongLinkEnabled: true,
+		SampleDir:       ".scratch/samples",
 	}
 }
 
-// ListenAddress ?? HTTP ?????
+// ListenAddress 返回 HTTP 监听地址。
 func (c Config) ListenAddress() string {
 	addr := strings.TrimSpace(c.HTTPAddr)
 	if addr == "" {
@@ -63,7 +65,7 @@ func (c Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
-// LoadFile ?? Beego ?? key=value ???
+// LoadFile 读取 Beego 风格 key=value 配置。
 func LoadFile(path string) (Config, error) {
 	cfg := Default()
 	f, err := os.Open(path)
@@ -136,6 +138,8 @@ func apply(c *Config, key, value string) {
 		c.ServerName = value
 	case "longlinkenabled":
 		c.LongLinkEnabled = parseBool(value)
+	case "sampledir":
+		c.SampleDir = value
 	}
 }
 

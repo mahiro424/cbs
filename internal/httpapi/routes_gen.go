@@ -1,6 +1,6 @@
 package httpapi
 
-// swaggerRoutes ? contracts/swagger.json ????????????????
+// swaggerRoutes 由 contracts/swagger.json 生成，作为第一阶段接口兼容契约。
 var swaggerRoutes = []Route{
 	{Method: "POST", Path: "/Favor/Del", Module: "Favor", Operation: "删除收藏"},
 	{Method: "POST", Path: "/Favor/GetFavInfo", Module: "Favor", Operation: "获取搜藏信息"},
