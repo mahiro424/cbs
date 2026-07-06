@@ -98,6 +98,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLoginGetA16Data(w, r, requestID)
 		return
 	}
+	if route.Path == "/Login/LogOut" {
+		s.handleLoginLogOut(w, r, requestID)
+		return
+	}
 	s.write(w, http.StatusOK, Envelope{Success: false, Code: "not_implemented", Message: "接口已接入但未实现", RequestID: requestID, Data: map[string]any{"path": route.Path, "method": route.Method, "module": route.Module, "operation": route.Operation}})
 }
 
@@ -518,7 +522,6 @@ func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
 		return
 	}
-
 	now := time.Now().UTC()
 	state.SessionState = "initialized"
 	state.LastInitAt = now
@@ -586,6 +589,10 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 	state, ok := s.states.GetByWxid(wxid)
 	if !ok {
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+		return
+	}
+	if state.SessionState == "logged_out" {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID, Data: map[string]any{"login_state": state.toMap()}})
 		return
 	}
 
@@ -751,6 +758,70 @@ func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, r
 	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
 }
 
+func (s *Server) handleLoginLogOut(w http.ResponseWriter, r *http.Request, requestID string) {
+	wxid := strings.TrimSpace(r.URL.Query().Get("wxid"))
+	if wxid == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
+		return
+	}
+	state, ok := s.states.GetByWxid(wxid)
+	if !ok {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
+		return
+	}
+
+	now := time.Now().UTC()
+	state.SessionState = "logged_out"
+	state.LogoutStatus = "logged_out"
+	state.LoggedOutAt = now
+	mockResponse := map[string]any{
+		"uuid":          state.UUID,
+		"cache_key":     state.CacheKey,
+		"wxid":          state.Wxid,
+		"logout_status": state.LogoutStatus,
+		"logged_out_at": now.Format(time.RFC3339Nano),
+	}
+	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-logout")
+	if err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid": wxid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.toMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
+		return
+	}
+	s.states.Save(state)
+
+	data := map[string]any{
+		"mode":          "mock",
+		"uuid":          state.UUID,
+		"cache_key":     state.CacheKey,
+		"wxid":          state.Wxid,
+		"logout_status": state.LogoutStatus,
+		"login_state":   state.toMap(),
+		"sample_path":   samplePath,
+		"stages": []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"mock_logout",
+			"persist_login_state",
+			"write_sample",
+		},
+	}
+	for key, value := range mockResponse {
+		data[key] = value
+	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 退出登录链路已跑通", RequestID: requestID, Data: data})
+}
+
 func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request, requestID string) {
 	uuid := strings.TrimSpace(r.URL.Query().Get("uuid"))
 	cacheKey := strings.TrimSpace(r.URL.Query().Get("cache_key"))
@@ -798,12 +869,14 @@ type loginState struct {
 	HeartbeatStatus string
 	HeartbeatCount  int
 	SamplePath      string
+	LogoutStatus    string
 	CreatedAt       time.Time
 	CheckedAt       time.Time
 	LastInitAt      time.Time
 	LastHeartbeatAt time.Time
 	LastExportKind  string
 	LastExportAt    time.Time
+	LoggedOutAt     time.Time
 	Protocol        map[string]any
 }
 
@@ -823,6 +896,7 @@ func (s loginState) toMap() map[string]any {
 		"heartbeat_status": s.HeartbeatStatus,
 		"heartbeat_count":  s.HeartbeatCount,
 		"last_export_kind": s.LastExportKind,
+		"logout_status":    s.LogoutStatus,
 		"sample_path":      s.SamplePath,
 		"created_at":       s.CreatedAt.Format(time.RFC3339Nano),
 		"protocol":         s.Protocol,
@@ -838,6 +912,9 @@ func (s loginState) toMap() map[string]any {
 	}
 	if !s.LastExportAt.IsZero() {
 		m["last_export_at"] = s.LastExportAt.Format(time.RFC3339Nano)
+	}
+	if !s.LoggedOutAt.IsZero() {
+		m["logged_out_at"] = s.LoggedOutAt.Format(time.RFC3339Nano)
 	}
 	return m
 }

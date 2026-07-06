@@ -488,3 +488,95 @@ func assertExportSample(t *testing.T, path string, wxid string, exportKind strin
 		t.Fatalf("导出样本 mock_response = %+v，期望 export_kind=%s", mockResponse, exportKind)
 	}
 }
+
+func TestLoginLogOutMockPathMarksWxidStateLoggedOut(t *testing.T) {
+	cfg := config.Default()
+	cfg.SampleDir = t.TempDir()
+	h := httpapi.NewServer(cfg)
+
+	missing := postJSON(t, h, "/Login/LogOut", `{}`)
+	if missing.Success || missing.Code != "param_error" {
+		t.Fatalf("LogOut 缺少 wxid 响应 = %+v，期望 param_error", missing)
+	}
+	notFound := postJSON(t, h, "/Login/LogOut?wxid=wxid_not_exists", `{}`)
+	if notFound.Success || notFound.Code != "cache_not_found" {
+		t.Fatalf("LogOut 不存在 wxid 响应 = %+v，期望 cache_not_found", notFound)
+	}
+
+	login := postJSON(t, h, "/Login/A16Data", `{"A16":"mock-a16-logout","DeviceID":"android-logout","DeviceName":"退出样本设备","Wxid":"wxid_logout"}`)
+	if !login.Success || login.Code != "ok" {
+		t.Fatalf("A16Data 响应 = %+v，期望 ok", login)
+	}
+	loginData := mustMap(t, login.Data)
+	uuid := mustString(t, loginData, "uuid")
+
+	beatBefore := postJSON(t, h, "/Login/HeartBeat?wxid=wxid_logout", `{}`)
+	if !beatBefore.Success || beatBefore.Code != "ok" {
+		t.Fatalf("退出前 HeartBeat 响应 = %+v，期望 ok", beatBefore)
+	}
+
+	logout := postJSON(t, h, "/Login/LogOut?wxid=wxid_logout", `{}`)
+	if !logout.Success || logout.Code != "ok" {
+		t.Fatalf("LogOut 响应 = %+v，期望 ok", logout)
+	}
+	data := mustMap(t, logout.Data)
+	if data["wxid"] != "wxid_logout" || data["logout_status"] != "logged_out" {
+		t.Fatalf("LogOut data = %+v，期望 logged_out", data)
+	}
+	if _, ok := data["stages"].([]any); !ok {
+		t.Fatalf("LogOut stages = %#v，期望数组", data["stages"])
+	}
+	state := mustMap(t, data["login_state"])
+	if state["uuid"] != uuid || state["session_state"] != "logged_out" || state["logout_status"] != "logged_out" {
+		t.Fatalf("LogOut login_state = %+v，期望记录退出状态", state)
+	}
+	samplePath := mustString(t, data, "sample_path")
+	assertLogoutSample(t, samplePath, "wxid_logout")
+
+	byUUID := postJSON(t, h, "/Login/GetCacheInfo?uuid="+uuid, `{}`)
+	if !byUUID.Success || byUUID.Code != "ok" {
+		t.Fatalf("按 uuid 查询响应 = %+v，期望 ok", byUUID)
+	}
+	stateByUUID := mustMap(t, byUUID.Data)
+	if stateByUUID["session_state"] != "logged_out" || stateByUUID["logout_status"] != "logged_out" || stateByUUID["sample_path"] != samplePath {
+		t.Fatalf("按 uuid 查询结果 = %+v，期望反映最近退出状态", stateByUUID)
+	}
+	if _, ok := stateByUUID["logged_out_at"].(string); !ok {
+		t.Fatalf("按 uuid 查询 logged_out_at = %#v，期望时间字符串", stateByUUID["logged_out_at"])
+	}
+
+	beatAfter := postJSON(t, h, "/Login/HeartBeat?wxid=wxid_logout", `{}`)
+	if beatAfter.Success || beatAfter.Code != "session_logged_out" {
+		t.Fatalf("退出后 HeartBeat 响应 = %+v，期望 session_logged_out", beatAfter)
+	}
+	afterData := mustMap(t, beatAfter.Data)
+	afterState := mustMap(t, afterData["login_state"])
+	if afterState["heartbeat_count"] != float64(1) || afterState["session_state"] != "logged_out" {
+		t.Fatalf("退出后 HeartBeat login_state = %+v，期望不增加心跳并保持 logged_out", afterState)
+	}
+}
+
+func assertLogoutSample(t *testing.T, path string, wxid string) {
+	t.Helper()
+	sampleRaw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取退出样本失败：%v", err)
+	}
+	var sample map[string]any
+	if err := json.Unmarshal(sampleRaw, &sample); err != nil {
+		t.Fatalf("退出样本不是 JSON：%v", err)
+	}
+	for _, key := range []string{"request", "mock_response", "login_state"} {
+		if _, ok := sample[key]; !ok {
+			t.Fatalf("退出样本缺少字段 %s：%+v", key, sample)
+		}
+	}
+	request := mustMap(t, sample["request"])
+	if request["wxid"] != wxid {
+		t.Fatalf("退出样本 request = %+v，期望 wxid=%s", request, wxid)
+	}
+	mockResponse := mustMap(t, sample["mock_response"])
+	if mockResponse["logout_status"] != "logged_out" {
+		t.Fatalf("退出样本 mock_response = %+v，期望 logged_out", mockResponse)
+	}
+}

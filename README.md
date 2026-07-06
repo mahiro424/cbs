@@ -9,7 +9,7 @@
 - 检查 Redis 可用性，不可用时给出清晰日志。
 - 注册现有 Swagger 中的 142 个接口路由。
 - 未实现接口返回统一 `not_implemented` JSON 响应。
-- `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data` 提供 mock 链路，并输出协议占位、登录态和样本路径。
+- `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 提供 mock 链路，并输出协议占位、登录态和样本路径。
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
 
 ## 运行
@@ -58,6 +58,12 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/Get62Data?wxid=<wxid
 Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetA16Data?wxid=<wxid>' -Body '{}'
 ```
 
+退出登录 mock：
+
+```powershell
+Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/LogOut?wxid=<wxid>' -Body '{}'
+```
+
 ## 当前登录 mock 链路
 
 `/Login/GetQR` 当前会经过一条可验证的二维码 mock 登录链路：
@@ -76,6 +82,8 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetA16Data?wxid=<wxi
 `/Login/Newinit` 与 `/Login/HeartBeat` 会按 `wxid` 读取 62data/A16Data 生成的登录态，更新 `session_state`、`heartbeat_status`、`heartbeat_count` 等字段，并让 `/Login/GetCacheInfo` 可回读最近一次登录后状态。
 
 `/Login/Get62Data` 与 `/Login/GetA16Data` 会按 `wxid` 导出对应登录态中的 mock 62/A16 数据，并记录 `last_export_kind` 与 `last_export_at`，为后续真实登录材料导入导出对拍保留接缝。
+
+`/Login/LogOut` 会按 `wxid` 将登录态标记为 `logged_out`，写入退出样本，并使后续 `/Login/HeartBeat` 对同一 `wxid` 返回 `session_logged_out`。
 
 查询登录态：
 
