@@ -12,6 +12,7 @@
 - `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 提供 mock 链路，并输出协议占位、登录态和样本路径。
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
 - 提供 `internal/protocol` mock-first Pack / Unpack、Hybrid ECDH iOS / Android、AES-GCM 解包和二进制调试入口，用于后续真实协议对拍替换。
+- 提供 `internal/network` mock/real 网络层接缝；默认 mock 不访问真实服务端，real 当前返回稳定未就绪错误。
 
 ## 运行
 
@@ -36,6 +37,20 @@ redisdbnum = 7
 ```
 
 `/healthz` 会输出 `login_state_store.mode`，用于确认当前运行时使用的是 `memory` 还是 `redis`。Redis 模式下，登录态会写入 `login:state:<uuid>`，并维护 `cache_key` 与 `wxid` 索引；Redis 不可用时，相关登录态保存/读取接口会返回统一 `login_state_store_error`。
+
+网络层默认使用 mock 模式，不访问真实微信服务端：
+
+```text
+networkmode = mock
+```
+
+需要验证真实网络模式的错误接缝时，可显式设置：
+
+```text
+networkmode = real
+```
+
+当前 `real` 模式尚未接入真实 MMTLS / HTTP 发送，会返回统一 `network_error`，用于先固定配置入口、错误结构和后续替换边界。`/healthz` 会输出 `network.mode`，用于确认当前网络模式。
 
 ## 编码治理
 
@@ -101,9 +116,10 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/LogOut?wxid=<wxid>' 
 1. 解析设备请求。
 2. 生成 Hybrid ECDH iOS 协议占位摘要。
 3. 生成 mock 二维码响应。
-4. 保存到配置选择的登录态存储（默认 `memory`，可切换到 `redis`）。
-5. 将请求、协议占位、mock 响应和登录态摘要落盘为 JSON 样本。
-6. 返回 `uuid`、`cache_key`、`protocol`、`login_state` 和 `sample_path`。
+4. 通过 `internal/network` 执行 mock 网络发送，生成可观测网络阶段摘要。
+5. 保存到配置选择的登录态存储（默认 `memory`，可切换到 `redis`）。
+6. 将请求、协议占位、网络摘要、mock 响应和登录态摘要落盘为 JSON 样本。
+7. 返回 `uuid`、`cache_key`、`protocol`、`network`、`login_state` 和 `sample_path`。
 
 `/Login/CheckQR` 会读取 `/Login/GetQR` 生成的 `uuid` 登录态，在 mock 模式下返回稳定的 `waiting_scan` 状态，写入最近一次检查样本，并让 `/Login/GetCacheInfo` 继续读回同一登录态。
 
@@ -147,6 +163,16 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 - Redis backend 测试使用进程内 fake Redis 夹具，不依赖真实 Redis 实例。
 
 当前 HTTP 默认仍使用 `MemoryLoginStateStore`，但可通过 `loginstatestore = redis` 切换为 `RedisLoginStateStore`。Redis 模式已覆盖跨 Server 实例读写测试：一个 Server 写入 `/Login/62data` 登录态后，另一个 Server 可以通过 `/Login/Newinit` 和 `/Login/GetCacheInfo` 读回并更新同一 Redis 登录态。
+
+## 当前网络层接缝
+
+`internal/network` 提供 `Client`、`Request`、`Response` 和配置化 `mock` / `real` 模式：
+
+- `mock`：默认模式，不访问真实服务端；返回 `mode`、`operation`、`login_kind`、`platform`、`stage`、`payload_sha256`、`payload_length` 等摘要，用于本地链路验证和样本落盘。
+- `real`：当前只固定入口和错误契约，返回可用 `errors.Is(err, network.ErrRealNetworkNotReady)` 判断的稳定错误；后续真实 MMTLS / HTTP 发送会在该模式下替换实现。
+- 非法网络模式会返回可用 `errors.Is(err, network.ErrNetworkConfig)` 判断的稳定配置错误。
+
+当前 `/Login/GetQR`、`/Login/62data` 和 `/Login/A16Data` 已通过该网络接缝产生 `network` 摘要，并写入响应与样本文件。
 
 ## 当前协议封包 mock 帧
 

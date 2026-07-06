@@ -28,6 +28,7 @@ type Config struct {
 	LongLinkEnabled bool
 	SampleDir       string
 	LoginStateStore string
+	NetworkMode     string
 }
 
 // Default 返回原服务常见默认值，确保缺少配置文件时仍可启动。
@@ -51,6 +52,7 @@ func Default() Config {
 		LongLinkEnabled: true,
 		SampleDir:       ".scratch/samples",
 		LoginStateStore: "memory",
+		NetworkMode:     "mock",
 	}
 }
 
@@ -144,6 +146,8 @@ func apply(c *Config, key, value string) {
 		c.SampleDir = value
 	case "loginstatestore", "login_state_store":
 		c.LoginStateStore = strings.ToLower(strings.TrimSpace(value))
+	case "networkmode", "network_mode":
+		c.NetworkMode = strings.ToLower(strings.TrimSpace(value))
 	}
 }
 
