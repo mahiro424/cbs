@@ -13,7 +13,7 @@
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
 - 提供 `internal/protocol` mock-first Pack / Unpack、Hybrid ECDH iOS / Android、AES-GCM 解包和二进制调试入口，用于后续真实协议对拍替换。
 - 提供 `internal/network` mock/real 网络层接缝；默认 mock 不访问真实服务端，real 当前返回稳定未就绪错误。
-- 提供 `internal/login` 登录业务层接缝；`/Login/GetQR`、`/Login/62data`、`/Login/A16Data` 已下沉为业务层 tracer bullet。
+- 提供 `internal/login` 登录业务层接缝；`/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data` 已下沉为业务层 tracer bullet。
 
 ## 运行
 
@@ -112,7 +112,7 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/LogOut?wxid=<wxid>' 
 
 ## 当前登录 mock 链路
 
-`/Login/GetQR`、`/Login/62data` 与 `/Login/A16Data` 当前已经由 HTTP 控制器下沉到 `internal/login` 业务层，会经过可验证的 mock 登录链路：
+`/Login/GetQR`、`/Login/CheckQR`、`/Login/62data` 与 `/Login/A16Data` 当前已经由 HTTP 控制器下沉到 `internal/login` 业务层，会经过可验证的 mock 登录链路：
 
 1. 解析设备请求。
 2. 业务层构建登录上下文和默认设备字段。
@@ -122,7 +122,7 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/LogOut?wxid=<wxid>' 
 6. 将请求、协议占位、网络摘要、mock 响应和登录态摘要落盘为 JSON 样本。
 7. 返回 `uuid`、`cache_key`、`protocol`、`network`、`login_state` 和 `sample_path`。
 
-`/Login/CheckQR` 会读取 `/Login/GetQR` 生成的 `uuid` 登录态，在 mock 模式下返回稳定的 `waiting_scan` 状态，写入最近一次检查样本，并让 `/Login/GetCacheInfo` 继续读回同一登录态。
+`/Login/CheckQR` 会通过业务层读取 `/Login/GetQR` 生成的 `uuid` 登录态，在 mock 模式下返回稳定的 `waiting_scan` 状态，写入最近一次检查样本，并让 `/Login/GetCacheInfo` 继续读回同一登录态。HTTP 控制器只负责 `uuid` 参数校验、错误映射和响应封装。
 
 `/Login/62data` 与 `/Login/A16Data` 会分别通过业务层生成 iOS / Android 的协议占位摘要、mock 登录响应、登录态和样本文件，供后续真实协议与样本对拍替换。HTTP 控制器只负责请求解析、错误映射和响应封装。
 
@@ -131,6 +131,8 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/LogOut?wxid=<wxid>' 
 `/Login/Get62Data` 与 `/Login/GetA16Data` 会按 `wxid` 导出对应登录态中的 mock 62/A16 数据，并记录 `last_export_kind` 与 `last_export_at`，为后续真实登录材料导入导出对拍保留接缝。
 
 `/Login/LogOut` 会按 `wxid` 将登录态标记为 `logged_out`，写入退出样本，并使后续 `/Login/HeartBeat` 对同一 `wxid` 返回 `session_logged_out`。
+
+> 当前 `/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data` 与 `/Login/LogOut` 仍保留在 HTTP 控制器内，后续切片会按同一模式继续迁移。
 
 查询登录态：
 

@@ -167,6 +167,10 @@ func (s *Server) writeLoginServiceError(w http.ResponseWriter, requestID string,
 	switch {
 	case errors.Is(err, network.ErrRealNetworkNotReady), errors.Is(err, network.ErrNetworkConfig):
 		s.writeNetworkError(w, requestID, err)
+	case errors.Is(err, loginpkg.ErrLoginStateNotFound):
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到二维码登录态", RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrUnsupportedLoginKind):
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrProtocolPack):
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrSamplePath):
@@ -212,73 +216,12 @@ func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requ
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 uuid", RequestID: requestID})
 		return
 	}
-	state, ok, err := s.states.Get(r.Context(), uuid, "")
+	result, err := s.login.CheckQR(r.Context(), loginpkg.CheckQRRequest{UUID: uuid})
 	if err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
+		s.writeLoginServiceError(w, requestID, err)
 		return
 	}
-	if !ok {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到二维码登录态", RequestID: requestID})
-		return
-	}
-	if state.LoginKind != "getqr_mock" {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID, Data: state.ToMap()})
-		return
-	}
-
-	checkedAt := time.Now().UTC()
-	state.QRStatus = "waiting_scan"
-	state.CheckCount++
-	state.CheckedAt = checkedAt
-	mockResponse := map[string]any{
-		"uuid":        state.UUID,
-		"cache_key":   state.CacheKey,
-		"status":      state.QRStatus,
-		"qr_status":   state.QRStatus,
-		"checked_at":  checkedAt.Format(time.RFC3339Nano),
-		"check_count": state.CheckCount,
-	}
-	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-checkqr")
-	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	state.SamplePath = samplePath
-	sample := map[string]any{
-		"request": map[string]any{
-			"uuid": uuid,
-		},
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
-	}
-	if err := writeSample(samplePath, sample); err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	if err := s.states.Save(r.Context(), state); err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
-
-	data := map[string]any{
-		"mode":        "mock",
-		"uuid":        state.UUID,
-		"cache_key":   state.CacheKey,
-		"qr_status":   state.QRStatus,
-		"login_state": state.ToMap(),
-		"sample_path": samplePath,
-		"stages": []string{
-			"parse_request",
-			"load_qr_login_state",
-			"mock_poll_qr_status",
-			"persist_login_state",
-			"write_sample",
-		},
-	}
-	for key, value := range mockResponse {
-		data[key] = value
-	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码检查链路已跑通", RequestID: requestID, Data: data})
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 二维码检查链路已跑通", RequestID: requestID, Data: result.ResponseData()})
 }
 
 type data62LoginRequest struct {
