@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,12 +24,12 @@ type Server struct {
 	cfg       config.Config
 	routes    map[string]Route
 	pathIndex map[string]struct{}
-	states    *loginStateStore
+	states    *storage.MemoryLoginStateStore
 	seq       atomic.Uint64
 }
 
 func NewServer(cfg config.Config) *Server {
-	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: newLoginStateStore()}
+	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: storage.NewMemoryLoginStateStore()}
 	for _, route := range AllRoutes() {
 		method := strings.ToUpper(route.Method)
 		route.Method = method
@@ -169,7 +168,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		"status":    "waiting_scan",
 		"qr_status": "waiting_scan",
 	}
-	state := loginState{
+	state := storage.LoginState{
 		UUID:       uuid,
 		CacheKey:   cacheKey,
 		DeviceID:   deviceID,
@@ -195,7 +194,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		},
 		"protocol":      protocol,
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -212,7 +211,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		"device_name": deviceName,
 		"type":        deviceType,
 		"protocol":    protocol,
-		"login_state": state.toMap(),
+		"login_state": state.ToMap(),
 		"sample_path": samplePath,
 		"stages": []string{
 			"parse_request",
@@ -239,7 +238,7 @@ func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requ
 		return
 	}
 	if state.LoginKind != "getqr_mock" {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID, Data: state.toMap()})
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID, Data: state.ToMap()})
 		return
 	}
 
@@ -266,7 +265,7 @@ func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requ
 			"uuid": uuid,
 		},
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -279,7 +278,7 @@ func (s *Server) handleLoginCheckQR(w http.ResponseWriter, r *http.Request, requ
 		"uuid":        state.UUID,
 		"cache_key":   state.CacheKey,
 		"qr_status":   state.QRStatus,
-		"login_state": state.toMap(),
+		"login_state": state.ToMap(),
 		"sample_path": samplePath,
 		"stages": []string{
 			"parse_request",
@@ -474,7 +473,7 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 	for key, value := range spec.MockResponse {
 		mockResponse[key] = value
 	}
-	state := loginState{
+	state := storage.LoginState{
 		UUID:       uuid,
 		CacheKey:   cacheKey,
 		DeviceID:   spec.DeviceID,
@@ -498,7 +497,7 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		"request":       spec.Request,
 		"protocol":      protocol,
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -514,7 +513,7 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, requestID string, spec m
 		"device_name": spec.DeviceName,
 		"type":        spec.Type,
 		"protocol":    protocol,
-		"login_state": state.toMap(),
+		"login_state": state.ToMap(),
 		"sample_path": samplePath,
 		"stages":      spec.Stages,
 	}
@@ -577,7 +576,7 @@ func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requ
 			"current_synckey": currentSyncKey,
 		},
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -591,7 +590,7 @@ func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requ
 		"cache_key":     state.CacheKey,
 		"wxid":          state.Wxid,
 		"session_state": state.SessionState,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 		"sample_path":   samplePath,
 		"stages": []string{
 			"parse_request",
@@ -619,7 +618,7 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	if state.SessionState == "logged_out" {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID, Data: map[string]any{"login_state": state.toMap()}})
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "session_logged_out", Message: "登录态已退出", RequestID: requestID, Data: map[string]any{"login_state": state.ToMap()}})
 		return
 	}
 
@@ -646,7 +645,7 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 			"wxid": wxid,
 		},
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -661,7 +660,7 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 		"wxid":             state.Wxid,
 		"heartbeat_status": state.HeartbeatStatus,
 		"heartbeat_count":  state.HeartbeatCount,
-		"login_state":      state.toMap(),
+		"login_state":      state.ToMap(),
 		"sample_path":      samplePath,
 		"stages": []string{
 			"parse_request",
@@ -729,7 +728,7 @@ func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	if state.LoginKind != spec.RequiredKind {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 wxid 登录态不支持该导出类型", RequestID: requestID, Data: state.toMap()})
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 wxid 登录态不支持该导出类型", RequestID: requestID, Data: state.ToMap()})
 		return
 	}
 
@@ -760,7 +759,7 @@ func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, r
 			"wxid": wxid,
 		},
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -774,7 +773,7 @@ func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, r
 		"cache_key":        state.CacheKey,
 		"wxid":             state.Wxid,
 		"export_kind":      spec.ExportKind,
-		"login_state":      state.toMap(),
+		"login_state":      state.ToMap(),
 		"sample_path":      samplePath,
 		"stages":           spec.Stages,
 		spec.ResponseField: exportValue,
@@ -819,7 +818,7 @@ func (s *Server) handleLoginLogOut(w http.ResponseWriter, r *http.Request, reque
 			"wxid": wxid,
 		},
 		"mock_response": mockResponse,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
@@ -833,7 +832,7 @@ func (s *Server) handleLoginLogOut(w http.ResponseWriter, r *http.Request, reque
 		"cache_key":     state.CacheKey,
 		"wxid":          state.Wxid,
 		"logout_status": state.LogoutStatus,
-		"login_state":   state.toMap(),
+		"login_state":   state.ToMap(),
 		"sample_path":   samplePath,
 		"stages": []string{
 			"parse_request",
@@ -861,7 +860,7 @@ func (s *Server) handleLoginGetCacheInfo(w http.ResponseWriter, r *http.Request,
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到登录态", RequestID: requestID})
 		return
 	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "已读取登录态", RequestID: requestID, Data: state.toMap()})
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "已读取登录态", RequestID: requestID, Data: state.ToMap()})
 }
 
 func decodeJSON(body io.Reader, out any) error {
@@ -877,112 +876,6 @@ func decodeJSON(body io.Reader, out any) error {
 		return fmt.Errorf("JSON 请求体无效：%w", err)
 	}
 	return nil
-}
-
-type loginState struct {
-	UUID            string
-	CacheKey        string
-	DeviceID        string
-	DeviceName      string
-	Type            string
-	Wxid            string
-	Data62          string
-	A16             string
-	Mode            string
-	LoginKind       string
-	QRStatus        string
-	CheckCount      int
-	SessionState    string
-	HeartbeatStatus string
-	HeartbeatCount  int
-	SamplePath      string
-	LogoutStatus    string
-	CreatedAt       time.Time
-	CheckedAt       time.Time
-	LastInitAt      time.Time
-	LastHeartbeatAt time.Time
-	LastExportKind  string
-	LastExportAt    time.Time
-	LoggedOutAt     time.Time
-	Protocol        map[string]any
-}
-
-func (s loginState) toMap() map[string]any {
-	m := map[string]any{
-		"uuid":             s.UUID,
-		"cache_key":        s.CacheKey,
-		"device_id":        s.DeviceID,
-		"device_name":      s.DeviceName,
-		"type":             s.Type,
-		"wxid":             s.Wxid,
-		"mode":             s.Mode,
-		"login_kind":       s.LoginKind,
-		"qr_status":        s.QRStatus,
-		"check_count":      s.CheckCount,
-		"session_state":    s.SessionState,
-		"heartbeat_status": s.HeartbeatStatus,
-		"heartbeat_count":  s.HeartbeatCount,
-		"last_export_kind": s.LastExportKind,
-		"logout_status":    s.LogoutStatus,
-		"sample_path":      s.SamplePath,
-		"created_at":       s.CreatedAt.Format(time.RFC3339Nano),
-		"protocol":         s.Protocol,
-	}
-	if !s.CheckedAt.IsZero() {
-		m["checked_at"] = s.CheckedAt.Format(time.RFC3339Nano)
-	}
-	if !s.LastInitAt.IsZero() {
-		m["last_init_at"] = s.LastInitAt.Format(time.RFC3339Nano)
-	}
-	if !s.LastHeartbeatAt.IsZero() {
-		m["last_heartbeat_at"] = s.LastHeartbeatAt.Format(time.RFC3339Nano)
-	}
-	if !s.LastExportAt.IsZero() {
-		m["last_export_at"] = s.LastExportAt.Format(time.RFC3339Nano)
-	}
-	if !s.LoggedOutAt.IsZero() {
-		m["logged_out_at"] = s.LoggedOutAt.Format(time.RFC3339Nano)
-	}
-	return m
-}
-
-type loginStateStore struct {
-	mu      sync.RWMutex
-	byUUID  map[string]loginState
-	byCache map[string]loginState
-	byWxid  map[string]loginState
-}
-
-func newLoginStateStore() *loginStateStore {
-	return &loginStateStore{byUUID: make(map[string]loginState), byCache: make(map[string]loginState), byWxid: make(map[string]loginState)}
-}
-
-func (s *loginStateStore) Save(state loginState) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.byUUID[state.UUID] = state
-	s.byCache[state.CacheKey] = state
-	if strings.TrimSpace(state.Wxid) != "" {
-		s.byWxid[state.Wxid] = state
-	}
-}
-
-func (s *loginStateStore) Get(uuid, cacheKey string) (loginState, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if uuid != "" {
-		state, ok := s.byUUID[uuid]
-		return state, ok
-	}
-	state, ok := s.byCache[cacheKey]
-	return state, ok
-}
-
-func (s *loginStateStore) GetByWxid(wxid string) (loginState, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	state, ok := s.byWxid[wxid]
-	return state, ok
 }
 
 func sampleFilePath(sampleDir, uuid string) (string, error) {
