@@ -168,3 +168,22 @@ go test ./internal/protocol -count=1
 ```powershell
 go test ./internal/protocol -run Hybrid -count=1
 ```
+
+## 当前 AES-GCM 解包接口
+
+`internal/protocol` 提供 `AESGCMUnpack`、`AESGCMUnpackHex` 和语义别名 `UnpackBusinessPacketWithAESGCM`。该接口复用 `internal/algorithm.AESGCMDecrypt`，用于先固定协议层响应解包接缝；真实微信响应的业务结构、protobuf 字段或后续登录态写入规则仍等待真实样本继续补齐。
+
+当前解包结果包含：
+
+- `operation`：调用方标记的业务操作；
+- `plaintext_hex`、`plaintext_sha256`、`plaintext_length`：明文摘要；
+- `ciphertext_sha256`：密文摘要；
+- `debug`：key、nonce、aad、ciphertext、plaintext 的长度信息。
+
+十六进制样本可通过 `AESGCMUnpackHex` 直接解包；`WriteAESGCMUnpackSample` 会保存 `request`、`decrypted`、`debug` 三段 JSON，便于后续与真实响应包对拍。
+
+可单独运行 AES-GCM 协议测试：
+
+```powershell
+go test ./internal/protocol -run AESGCM -count=1
+```
