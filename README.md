@@ -117,6 +117,23 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 .scratch/samples
 ```
 
+## 当前登录态存储边界
+
+`internal/storage` 提供 `LoginState`、`EncodeLoginState`、`DecodeLoginState` 和 `MemoryLoginStateStore`。当前登录 mock 链路已经通过该 storage 边界保存、读取和更新登录态，不再在 HTTP 控制器内维护私有登录态结构。
+
+当前 storage 边界覆盖：
+
+- 登录态 JSON 序列化与反序列化；
+- `uuid` 主键读取；
+- `cache_key` 索引读取；
+- `wxid` 索引读取；
+- Redis key 规划：
+  - `login:state:<uuid>`
+  - `login:index:cache:<cache_key>`
+  - `login:index:wxid:<wxid>`
+
+真实 Redis backend 仍待后续切片接入；当前 `MemoryLoginStateStore` 用于 mock-first 本地链路和测试接缝。
+
 ## 当前协议封包 mock 帧
 
 `internal/protocol` 当前提供的是 mock-first 协议帧，不是最终真实微信 `Pack` / `UnpackBusinessPacket` 协议。它的目标是先固定一个可测试、可落盘、可检测损坏数据的协议边界，后续真实协议还原时在同一模块内逐步替换。
