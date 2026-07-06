@@ -18,10 +18,12 @@ import (
 )
 
 var (
-	ErrProtocolPack = errors.New("login protocol pack failed")
-	ErrSamplePath   = errors.New("login sample path failed")
-	ErrSampleWrite  = errors.New("login sample write failed")
-	ErrStateStore   = errors.New("login state store failed")
+	ErrProtocolPack         = errors.New("login protocol pack failed")
+	ErrSamplePath           = errors.New("login sample path failed")
+	ErrSampleWrite          = errors.New("login sample write failed")
+	ErrStateStore           = errors.New("login state store failed")
+	ErrLoginStateNotFound   = errors.New("login state not found")
+	ErrUnsupportedLoginKind = errors.New("unsupported login kind")
 )
 
 type Dependencies struct {
@@ -66,6 +68,10 @@ type GetQRRequest struct {
 	Proxy      any
 }
 
+type CheckQRRequest struct {
+	UUID string
+}
+
 type GetQRResult struct {
 	Mode         string
 	UUID         string
@@ -77,6 +83,19 @@ type GetQRResult struct {
 	QRStatus     string
 	Protocol     map[string]any
 	Network      map[string]any
+	State        storage.LoginState
+	SamplePath   string
+	MockResponse map[string]any
+	Stages       []string
+}
+
+type CheckQRResult struct {
+	Mode         string
+	UUID         string
+	CacheKey     string
+	QRStatus     string
+	CheckedAt    time.Time
+	CheckCount   int
 	State        storage.LoginState
 	SamplePath   string
 	MockResponse map[string]any
@@ -127,6 +146,24 @@ func (r GetQRResult) ResponseData() map[string]any {
 		"type":        r.Type,
 		"protocol":    r.Protocol,
 		"network":     r.Network,
+		"login_state": r.State.ToMap(),
+		"sample_path": r.SamplePath,
+		"stages":      r.Stages,
+	}
+	for key, value := range r.MockResponse {
+		data[key] = value
+	}
+	return data
+}
+
+func (r CheckQRResult) ResponseData() map[string]any {
+	data := map[string]any{
+		"mode":        r.Mode,
+		"uuid":        r.UUID,
+		"cache_key":   r.CacheKey,
+		"qr_status":   r.QRStatus,
+		"checked_at":  r.CheckedAt.Format(time.RFC3339Nano),
+		"check_count": r.CheckCount,
 		"login_state": r.State.ToMap(),
 		"sample_path": r.SamplePath,
 		"stages":      r.Stages,
@@ -254,6 +291,68 @@ func (s *Service) GetQR(ctx context.Context, req GetQRRequest) (GetQRResult, err
 			"prepare_device_profile",
 			"hybrid_ecdh_ios_pack_placeholder",
 			"mock_network_response",
+			"persist_login_state",
+			"write_sample",
+		},
+	}, nil
+}
+
+func (s *Service) CheckQR(ctx context.Context, req CheckQRRequest) (CheckQRResult, error) {
+	uuid := strings.TrimSpace(req.UUID)
+	state, ok, err := s.states.Get(ctx, uuid, "")
+	if err != nil {
+		return CheckQRResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	if !ok {
+		return CheckQRResult{}, fmt.Errorf("%w: %s", ErrLoginStateNotFound, uuid)
+	}
+	if state.LoginKind != "getqr_mock" {
+		return CheckQRResult{}, fmt.Errorf("%w: 当前 uuid 不是二维码登录态", ErrUnsupportedLoginKind)
+	}
+	checkedAt := s.now().UTC()
+	state.QRStatus = "waiting_scan"
+	state.CheckCount++
+	state.CheckedAt = checkedAt
+	mockResponse := map[string]any{
+		"uuid":        state.UUID,
+		"cache_key":   state.CacheKey,
+		"status":      state.QRStatus,
+		"qr_status":   state.QRStatus,
+		"checked_at":  checkedAt.Format(time.RFC3339Nano),
+		"check_count": state.CheckCount,
+	}
+	samplePath, err := sampleFilePath(s.sampleDir, state.UUID+"-checkqr")
+	if err != nil {
+		return CheckQRResult{}, fmt.Errorf("%w: %v", ErrSamplePath, err)
+	}
+	state.SamplePath = samplePath
+	sample := map[string]any{
+		"request": map[string]any{
+			"uuid": uuid,
+		},
+		"mock_response": mockResponse,
+		"login_state":   state.ToMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		return CheckQRResult{}, fmt.Errorf("%w: %v", ErrSampleWrite, err)
+	}
+	if err := s.states.Save(ctx, state); err != nil {
+		return CheckQRResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	return CheckQRResult{
+		Mode:         "mock",
+		UUID:         state.UUID,
+		CacheKey:     state.CacheKey,
+		QRStatus:     state.QRStatus,
+		CheckedAt:    checkedAt,
+		CheckCount:   state.CheckCount,
+		State:        state,
+		SamplePath:   samplePath,
+		MockResponse: mockResponse,
+		Stages: []string{
+			"parse_request",
+			"load_qr_login_state",
+			"mock_poll_qr_status",
 			"persist_login_state",
 			"write_sample",
 		},

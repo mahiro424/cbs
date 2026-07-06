@@ -230,6 +230,16 @@ func TestLoginCheckQRMockPathReadsAndUpdatesGetQRState(t *testing.T) {
 		t.Fatalf("不存在 uuid 响应 = %+v，期望 cache_not_found", notFound)
 	}
 
+	imported := postJSON(t, h, "/Login/62data", `{"Data62":"checkqr-http-unsupported-62","DeviceID":"checkqr-http-iphone","DeviceName":"非二维码检查设备","Wxid":"wxid_checkqr_http_unsupported"}`)
+	if !imported.Success || imported.Code != "ok" {
+		t.Fatalf("62data 响应 = %+v，期望 ok", imported)
+	}
+	importedData := mustMap(t, imported.Data)
+	unsupported := postJSON(t, h, "/Login/CheckQR?uuid="+mustString(t, importedData, "uuid"), `{}`)
+	if unsupported.Success || unsupported.Code != "unsupported_login_kind" {
+		t.Fatalf("非二维码 uuid 响应 = %+v，期望 unsupported_login_kind", unsupported)
+	}
+
 	check := postJSON(t, h, "/Login/CheckQR?uuid="+uuid, `{}`)
 	if !check.Success || check.Code != "ok" {
 		t.Fatalf("CheckQR 响应 = %+v，期望 ok", check)
