@@ -11,7 +11,7 @@
 - 未实现接口返回统一 `not_implemented` JSON 响应。
 - `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 提供 mock 链路，并输出协议占位、登录态和样本路径。
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
-- 提供 `internal/protocol` mock-first Pack / Unpack 样本入口，用于后续真实协议对拍替换。
+- 提供 `internal/protocol` mock-first Pack / Unpack 与 Hybrid ECDH iOS / Android 样本入口，用于后续真实协议对拍替换。
 
 ## 运行
 
@@ -147,3 +147,24 @@ go test ./internal/protocol -count=1
 - hex 输入输出往返；
 - 样本 JSON 落盘，包含 `request`、`packed`、`unpacked`、`debug`；
 - magic、长度和 CRC 损坏时返回稳定错误。
+
+## 当前 Hybrid ECDH mock 接口
+
+`internal/protocol` 还提供 `HybridECDHPackIOS`、`HybridECDHPackAndroid` 和按平台分发的 `HybridECDHPack`。这些接口当前仍是 mock-first 占位实现，不是真实微信 Hybrid ECDH 加密结果；它们复用当前 `PackBusinessPacket` 帧，以便先固定 iOS / Android 的协议接缝、摘要字段和样本格式。
+
+当前 Hybrid 摘要包含：
+
+- `platform`：`ios` 或 `android`；
+- `pack_kind`：`hybrid_ecdh_ios_placeholder` 或 `hybrid_ecdh_android_placeholder`；
+- `operation`：业务操作名；
+- `payload_sha256`、`payload_length`：payload 安全摘要；
+- `packed_hex`：mock 帧十六进制；
+- `debug`：帧头、长度和 CRC 摘要。
+
+登录 mock 链路中的 `/Login/GetQR`、`/Login/62data`、`/Login/A16Data` 已改为通过该模块生成 `protocol` 摘要，避免 Hybrid 占位逻辑散落在 HTTP 控制器中。
+
+可单独运行 Hybrid 协议测试：
+
+```powershell
+go test ./internal/protocol -run Hybrid -count=1
+```
