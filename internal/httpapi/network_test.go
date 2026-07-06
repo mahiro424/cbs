@@ -88,12 +88,38 @@ func TestRealNetworkModeReturnsStableNetworkError(t *testing.T) {
 	cfg.SampleDir = t.TempDir()
 	h := httpapi.NewServer(cfg)
 
-	status, body := postJSONWithStatus(t, h, "/Login/GetQR", `{"DeviceID":"real-network","DeviceName":"真实网络未就绪设备","Type":"ipad"}`)
-	if status != http.StatusBadGateway {
-		t.Fatalf("状态码 = %d，期望 502，响应：%+v", status, body)
+	cases := []struct {
+		name    string
+		path    string
+		payload string
+	}{
+		{
+			name:    "二维码登录",
+			path:    "/Login/GetQR",
+			payload: `{"DeviceID":"real-network","DeviceName":"真实网络未就绪设备","Type":"ipad"}`,
+		},
+		{
+			name:    "62 登录",
+			path:    "/Login/62data",
+			payload: `{"Data62":"real-network-62","DeviceID":"real-network-iphone","DeviceName":"真实网络 62 设备","Wxid":"wxid_real_62"}`,
+		},
+		{
+			name:    "A16 登录",
+			path:    "/Login/A16Data",
+			payload: `{"A16":"real-network-a16","DeviceID":"real-network-android","DeviceName":"真实网络 A16 设备","Wxid":"wxid_real_a16"}`,
+		},
 	}
-	if body.Success || body.Code != "network_error" || body.Message == "" {
-		t.Fatalf("real network 响应 = %+v，期望 network_error", body)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := postJSONWithStatus(t, h, tc.path, tc.payload)
+			if status != http.StatusBadGateway {
+				t.Fatalf("状态码 = %d，期望 502，响应：%+v", status, body)
+			}
+			if body.Success || body.Code != "network_error" || body.Message == "" {
+				t.Fatalf("real network 响应 = %+v，期望 network_error", body)
+			}
+		})
 	}
 }
 
