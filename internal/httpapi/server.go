@@ -319,118 +319,39 @@ func (s *Server) handleLoginHeartBeat(w http.ResponseWriter, r *http.Request, re
 }
 
 func (s *Server) handleLoginGet62Data(w http.ResponseWriter, r *http.Request, requestID string) {
-	s.handleLoginExportData(w, r, requestID, loginExportSpec{
-		ExportKind:    "mock_62data",
-		RequiredKind:  "data62_mock",
-		ResponseField: "data62",
-		Stages: []string{
-			"parse_request",
-			"load_wxid_login_state",
-			"mock_export_62data",
-			"persist_login_state",
-			"write_sample",
-		},
-		SuccessMessage: "mock 62 数据导出链路已跑通",
-	})
-}
-
-func (s *Server) handleLoginGetA16Data(w http.ResponseWriter, r *http.Request, requestID string) {
-	s.handleLoginExportData(w, r, requestID, loginExportSpec{
-		ExportKind:    "mock_a16data",
-		RequiredKind:  "a16_mock",
-		ResponseField: "a16",
-		Stages: []string{
-			"parse_request",
-			"load_wxid_login_state",
-			"mock_export_a16data",
-			"persist_login_state",
-			"write_sample",
-		},
-		SuccessMessage: "mock A16 数据导出链路已跑通",
-	})
-}
-
-type loginExportSpec struct {
-	ExportKind     string
-	RequiredKind   string
-	ResponseField  string
-	Stages         []string
-	SuccessMessage string
-}
-
-func (s *Server) handleLoginExportData(w http.ResponseWriter, r *http.Request, requestID string, spec loginExportSpec) {
 	wxid := strings.TrimSpace(r.URL.Query().Get("wxid"))
 	if wxid == "" {
 		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
 		return
 	}
-	state, ok, err := s.states.GetByWxid(r.Context(), wxid)
+	result, err := s.login.Get62Data(r.Context(), loginpkg.ExportLoginDataRequest{Wxid: wxid})
 	if err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
+		s.writeLoginExportServiceError(w, requestID, result, err)
 		return
 	}
-	if !ok {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "cache_not_found", Message: "未找到 wxid 登录态", RequestID: requestID})
-		return
-	}
-	if state.LoginKind != spec.RequiredKind {
-		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 wxid 登录态不支持该导出类型", RequestID: requestID, Data: state.ToMap()})
-		return
-	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock 62 数据导出链路已跑通", RequestID: requestID, Data: result.ResponseData()})
+}
 
-	exportValue := state.Data62
-	if spec.ResponseField == "a16" {
-		exportValue = state.A16
+func (s *Server) handleLoginGetA16Data(w http.ResponseWriter, r *http.Request, requestID string) {
+	wxid := strings.TrimSpace(r.URL.Query().Get("wxid"))
+	if wxid == "" {
+		s.write(w, http.StatusBadRequest, Envelope{Success: false, Code: "param_error", Message: "必须提供 wxid", RequestID: requestID})
+		return
 	}
-	now := time.Now().UTC()
-	state.LastExportKind = spec.ExportKind
-	state.LastExportAt = now
-	mockResponse := map[string]any{
-		"uuid":             state.UUID,
-		"cache_key":        state.CacheKey,
-		"wxid":             state.Wxid,
-		"export_kind":      spec.ExportKind,
-		"exported_at":      now.Format(time.RFC3339Nano),
-		"payload_size":     len(exportValue),
-		spec.ResponseField: exportValue,
-	}
-	samplePath, err := sampleFilePath(s.cfg.SampleDir, state.UUID+"-"+spec.ExportKind)
+	result, err := s.login.GetA16Data(r.Context(), loginpkg.ExportLoginDataRequest{Wxid: wxid})
 	if err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
+		s.writeLoginExportServiceError(w, requestID, result, err)
 		return
 	}
-	state.SamplePath = samplePath
-	sample := map[string]any{
-		"request": map[string]any{
-			"wxid": wxid,
-		},
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
-	}
-	if err := writeSample(samplePath, sample); err != nil {
-		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_write_error", Message: err.Error(), RequestID: requestID})
-		return
-	}
-	if err := s.states.Save(r.Context(), state); err != nil {
-		s.writeLoginStateStoreError(w, requestID, err)
-		return
-	}
+	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "mock A16 数据导出链路已跑通", RequestID: requestID, Data: result.ResponseData()})
+}
 
-	data := map[string]any{
-		"mode":             "mock",
-		"uuid":             state.UUID,
-		"cache_key":        state.CacheKey,
-		"wxid":             state.Wxid,
-		"export_kind":      spec.ExportKind,
-		"login_state":      state.ToMap(),
-		"sample_path":      samplePath,
-		"stages":           spec.Stages,
-		spec.ResponseField: exportValue,
+func (s *Server) writeLoginExportServiceError(w http.ResponseWriter, requestID string, result loginpkg.ExportLoginDataResult, err error) {
+	if errors.Is(err, loginpkg.ErrUnsupportedLoginKind) {
+		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 wxid 登录态不支持该导出类型", RequestID: requestID, Data: result.State.ToMap()})
+		return
 	}
-	for key, value := range mockResponse {
-		data[key] = value
-	}
-	s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: spec.SuccessMessage, RequestID: requestID, Data: data})
+	s.writeLoginServiceError(w, requestID, err)
 }
 
 func (s *Server) handleLoginLogOut(w http.ResponseWriter, r *http.Request, requestID string) {
