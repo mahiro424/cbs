@@ -8,7 +8,18 @@ from pathlib import Path
 TEXT_SUFFIXES = {
     '.go', '.md', '.json', '.yml', '.yaml', '.toml', '.ini', '.conf', '.ps1', '.py', '.txt', '.mod', '.sum', '.gitignore', '.gitattributes', '.editorconfig'
 }
-SKIP_DIRS = {'.git', '.scratch', 'vendor', 'node_modules', 'bin', 'dist', 'build'}
+SKIP_DIRS = {
+    '.git',
+    '.scratch',
+    '.encoding-backups',
+    '.venv',
+    'vendor',
+    'node_modules',
+    'bin',
+    'dist',
+    'build',
+    '__pycache__',
+}
 SUSPICIOUS_MARKERS = [
     chr(63) * 3,
     chr(0xFFFD) * 3,
