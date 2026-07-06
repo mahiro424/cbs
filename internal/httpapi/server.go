@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mahiro424/cbs/internal/config"
+	"github.com/mahiro424/cbs/internal/network"
 	protocolpkg "github.com/mahiro424/cbs/internal/protocol"
 	"github.com/mahiro424/cbs/internal/storage"
 )
@@ -27,12 +28,16 @@ type Server struct {
 	states    storage.LoginStateStore
 	stateMode string
 	stateErr  error
+	network   network.Client
+	netMode   string
+	netErr    error
 	seq       atomic.Uint64
 }
 
 func NewServer(cfg config.Config) *Server {
 	states, stateMode, stateErr := storage.NewLoginStateStoreFromConfig(cfg)
-	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: states, stateMode: stateMode, stateErr: stateErr}
+	netClient, netMode, netErr := network.NewClient(network.Config{Mode: cfg.NetworkMode})
+	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: states, stateMode: stateMode, stateErr: stateErr, network: netClient, netMode: netMode, netErr: netErr}
 	for _, route := range AllRoutes() {
 		method := strings.ToUpper(route.Method)
 		route.Method = method
@@ -50,6 +55,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"listen":            s.cfg.ListenAddress(),
 			"redis":             storage.CheckRedis(context.Background(), s.cfg),
 			"login_state_store": s.loginStateStoreSummary(),
+			"network":           s.networkSummary(),
 			"routes":            len(AllRoutes()),
 			"mode":              "mock-first",
 			"version":           "0.1.0",
@@ -136,8 +142,25 @@ func (s *Server) loginStateStoreSummary() map[string]any {
 	return summary
 }
 
+func (s *Server) networkSummary() map[string]any {
+	summary := map[string]any{
+		"mode": s.netMode,
+	}
+	if s.netErr != nil {
+		summary["available"] = false
+		summary["message"] = s.netErr.Error()
+		return summary
+	}
+	summary["available"] = true
+	return summary
+}
+
 func (s *Server) writeLoginStateStoreError(w http.ResponseWriter, requestID string, err error) {
 	s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "login_state_store_error", Message: err.Error(), RequestID: requestID})
+}
+
+func (s *Server) writeNetworkError(w http.ResponseWriter, requestID string, err error) {
+	s.write(w, http.StatusBadGateway, Envelope{Success: false, Code: "network_error", Message: err.Error(), RequestID: requestID})
 }
 
 type getQRRequest struct {
@@ -183,6 +206,14 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		return
 	}
 	protocol := protocolTraceFromHybrid(hybrid, "getqr_mock")
+	networkTrace, err := s.sendLoginNetwork(r.Context(), "Login.GetQR", "getqr_mock", hybrid.Platform, hybrid, map[string]string{
+		"device_id": deviceID,
+		"type":      deviceType,
+	})
+	if err != nil {
+		s.writeNetworkError(w, requestID, err)
+		return
+	}
 	mockResponse := map[string]any{
 		"uuid":      uuid,
 		"qr_url":    "mock://login/" + uuid,
@@ -214,6 +245,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 			"type":        deviceType,
 		},
 		"protocol":      protocol,
+		"network":       networkTrace,
 		"mock_response": mockResponse,
 		"login_state":   state.ToMap(),
 	}
@@ -235,6 +267,7 @@ func (s *Server) handleLoginGetQR(w http.ResponseWriter, r *http.Request, reques
 		"device_name": deviceName,
 		"type":        deviceType,
 		"protocol":    protocol,
+		"network":     networkTrace,
 		"login_state": state.ToMap(),
 		"sample_path": samplePath,
 		"stages": []string{
@@ -497,6 +530,15 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, ctx context.Context, req
 		return
 	}
 	protocol := protocolTraceFromHybrid(hybrid, spec.LoginKind)
+	networkTrace, err := s.sendLoginNetwork(ctx, operation, spec.LoginKind, hybrid.Platform, hybrid, map[string]string{
+		"device_id": spec.DeviceID,
+		"type":      spec.Type,
+		"wxid":      spec.Wxid,
+	})
+	if err != nil {
+		s.writeNetworkError(w, requestID, err)
+		return
+	}
 	mockResponse := map[string]any{
 		"uuid":      uuid,
 		"cache_key": cacheKey,
@@ -527,6 +569,7 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, ctx context.Context, req
 	sample := map[string]any{
 		"request":       spec.Request,
 		"protocol":      protocol,
+		"network":       networkTrace,
 		"mock_response": mockResponse,
 		"login_state":   state.ToMap(),
 	}
@@ -547,6 +590,7 @@ func (s *Server) handleMockLogin(w http.ResponseWriter, ctx context.Context, req
 		"device_name": spec.DeviceName,
 		"type":        spec.Type,
 		"protocol":    protocol,
+		"network":     networkTrace,
 		"login_state": state.ToMap(),
 		"sample_path": samplePath,
 		"stages":      spec.Stages,
@@ -569,6 +613,20 @@ func protocolTraceFromHybrid(hybrid protocolpkg.HybridPacket, loginKind string) 
 		"packed_hex":     hybrid.PackedHex,
 		"debug":          hybrid.Debug,
 	}
+}
+
+func (s *Server) sendLoginNetwork(ctx context.Context, operation string, loginKind string, platform string, hybrid protocolpkg.HybridPacket, metadata map[string]string) (map[string]any, error) {
+	resp, err := s.network.Send(ctx, network.Request{
+		Operation: operation,
+		LoginKind: loginKind,
+		Platform:  platform,
+		Payload:   []byte(hybrid.PackedHex),
+		Metadata:  metadata,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.ToMap(), nil
 }
 
 func (s *Server) handleLoginNewinit(w http.ResponseWriter, r *http.Request, requestID string) {

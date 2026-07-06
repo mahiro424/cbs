@@ -35,6 +35,9 @@ func TestLoadAppConfigKeepsOriginalServiceDefaults(t *testing.T) {
 	if cfg.LoginStateStore != "memory" {
 		t.Fatalf("LoginStateStore = %q，期望默认 memory", cfg.LoginStateStore)
 	}
+	if cfg.NetworkMode != "mock" {
+		t.Fatalf("NetworkMode = %q，期望默认 mock", cfg.NetworkMode)
+	}
 }
 
 func TestDefaultConfigIsUsableWithoutFile(t *testing.T) {
@@ -47,6 +50,9 @@ func TestDefaultConfigIsUsableWithoutFile(t *testing.T) {
 	}
 	if cfg.LoginStateStore != "memory" {
 		t.Fatalf("LoginStateStore = %q，期望 memory", cfg.LoginStateStore)
+	}
+	if cfg.NetworkMode != "mock" {
+		t.Fatalf("NetworkMode = %q，期望 mock", cfg.NetworkMode)
 	}
 }
 
@@ -64,5 +70,19 @@ func TestLoadAppConfigCanSelectRedisLoginStateStore(t *testing.T) {
 	}
 	if cfg.RedisLink != "127.0.0.1:6380" || cfg.RedisDBNum != 8 {
 		t.Fatalf("Redis 配置 = %s / %d，期望读取临时配置", cfg.RedisLink, cfg.RedisDBNum)
+	}
+}
+
+func TestLoadAppConfigCanSelectNetworkMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.conf")
+	if err := os.WriteFile(path, []byte("networkmode = real\n"), 0o644); err != nil {
+		t.Fatalf("写入临时配置失败：%v", err)
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatalf("读取配置失败：%v", err)
+	}
+	if cfg.NetworkMode != "real" {
+		t.Fatalf("NetworkMode = %q，期望 real", cfg.NetworkMode)
 	}
 }
