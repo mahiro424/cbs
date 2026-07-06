@@ -264,3 +264,106 @@ func TestLoginCheckQRMockPathReadsAndUpdatesGetQRState(t *testing.T) {
 		t.Fatalf("按 uuid 查询结果 = %+v，期望反映最近一次 CheckQR 状态", stateByUUID)
 	}
 }
+
+func TestLoginNewinitAndHeartBeatMockPathsUpdateWxidState(t *testing.T) {
+	cfg := config.Default()
+	cfg.SampleDir = t.TempDir()
+	h := httpapi.NewServer(cfg)
+
+	missingNewinit := postJSON(t, h, "/Login/Newinit", `{}`)
+	if missingNewinit.Success || missingNewinit.Code != "param_error" {
+		t.Fatalf("Newinit 缺少 wxid 响应 = %+v，期望 param_error", missingNewinit)
+	}
+	missingHeartBeat := postJSON(t, h, "/Login/HeartBeat", `{}`)
+	if missingHeartBeat.Success || missingHeartBeat.Code != "param_error" {
+		t.Fatalf("HeartBeat 缺少 wxid 响应 = %+v，期望 param_error", missingHeartBeat)
+	}
+	notFound := postJSON(t, h, "/Login/Newinit?wxid=wxid_not_exists", `{}`)
+	if notFound.Success || notFound.Code != "cache_not_found" {
+		t.Fatalf("不存在 wxid 响应 = %+v，期望 cache_not_found", notFound)
+	}
+	heartBeatNotFound := postJSON(t, h, "/Login/HeartBeat?wxid=wxid_not_exists", `{}`)
+	if heartBeatNotFound.Success || heartBeatNotFound.Code != "cache_not_found" {
+		t.Fatalf("HeartBeat 不存在 wxid 响应 = %+v，期望 cache_not_found", heartBeatNotFound)
+	}
+
+	login := postJSON(t, h, "/Login/A16Data", `{"A16":"mock-a16-post-login","DeviceID":"android-post-login","DeviceName":"登录后样本设备","Wxid":"wxid_post_login"}`)
+	if !login.Success || login.Code != "ok" {
+		t.Fatalf("A16Data 响应 = %+v，期望 ok", login)
+	}
+	loginData := mustMap(t, login.Data)
+	uuid := mustString(t, loginData, "uuid")
+
+	init := postJSON(t, h, "/Login/Newinit?wxid=wxid_post_login&MaxSynckey=max-key-1&CurrentSynckey=current-key-1", `{}`)
+	if !init.Success || init.Code != "ok" {
+		t.Fatalf("Newinit 响应 = %+v，期望 ok", init)
+	}
+	initData := mustMap(t, init.Data)
+	if initData["wxid"] != "wxid_post_login" || initData["session_state"] != "initialized" {
+		t.Fatalf("Newinit data = %+v，期望 initialized", initData)
+	}
+	if _, ok := initData["stages"].([]any); !ok {
+		t.Fatalf("Newinit stages = %#v，期望数组", initData["stages"])
+	}
+	initState := mustMap(t, initData["login_state"])
+	if initState["uuid"] != uuid || initState["wxid"] != "wxid_post_login" || initState["session_state"] != "initialized" {
+		t.Fatalf("Newinit login_state = %+v，期望包含 uuid/wxid/initialized", initState)
+	}
+	initSamplePath := mustString(t, initData, "sample_path")
+	assertLoginStageSample(t, initSamplePath, "wxid_post_login", "initialized", "")
+
+	beat := postJSON(t, h, "/Login/HeartBeat?wxid=wxid_post_login", `{}`)
+	if !beat.Success || beat.Code != "ok" {
+		t.Fatalf("HeartBeat 响应 = %+v，期望 ok", beat)
+	}
+	beatData := mustMap(t, beat.Data)
+	if beatData["wxid"] != "wxid_post_login" || beatData["heartbeat_status"] != "alive" || beatData["heartbeat_count"] != float64(1) {
+		t.Fatalf("HeartBeat data = %+v，期望 alive 且 heartbeat_count=1", beatData)
+	}
+	if _, ok := beatData["stages"].([]any); !ok {
+		t.Fatalf("HeartBeat stages = %#v，期望数组", beatData["stages"])
+	}
+	beatState := mustMap(t, beatData["login_state"])
+	if beatState["uuid"] != uuid || beatState["session_state"] != "initialized" || beatState["heartbeat_status"] != "alive" {
+		t.Fatalf("HeartBeat login_state = %+v，期望保留 initialized 并进入 alive", beatState)
+	}
+	beatSamplePath := mustString(t, beatData, "sample_path")
+	assertLoginStageSample(t, beatSamplePath, "wxid_post_login", "", "alive")
+
+	byUUID := postJSON(t, h, "/Login/GetCacheInfo?uuid="+uuid, `{}`)
+	if !byUUID.Success || byUUID.Code != "ok" {
+		t.Fatalf("按 uuid 查询响应 = %+v，期望 ok", byUUID)
+	}
+	stateByUUID := mustMap(t, byUUID.Data)
+	if stateByUUID["wxid"] != "wxid_post_login" || stateByUUID["session_state"] != "initialized" || stateByUUID["heartbeat_status"] != "alive" || stateByUUID["sample_path"] != beatSamplePath {
+		t.Fatalf("按 uuid 查询结果 = %+v，期望反映最近一次 HeartBeat 状态", stateByUUID)
+	}
+}
+
+func assertLoginStageSample(t *testing.T, path string, wxid string, sessionState string, heartbeatStatus string) {
+	t.Helper()
+	sampleRaw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取登录阶段样本失败：%v", err)
+	}
+	var sample map[string]any
+	if err := json.Unmarshal(sampleRaw, &sample); err != nil {
+		t.Fatalf("登录阶段样本不是 JSON：%v", err)
+	}
+	for _, key := range []string{"request", "mock_response", "login_state"} {
+		if _, ok := sample[key]; !ok {
+			t.Fatalf("登录阶段样本缺少字段 %s：%+v", key, sample)
+		}
+	}
+	request := mustMap(t, sample["request"])
+	if request["wxid"] != wxid {
+		t.Fatalf("登录阶段样本 request = %+v，期望 wxid=%s", request, wxid)
+	}
+	mockResponse := mustMap(t, sample["mock_response"])
+	if sessionState != "" && mockResponse["session_state"] != sessionState {
+		t.Fatalf("登录阶段样本 mock_response = %+v，期望 session_state=%s", mockResponse, sessionState)
+	}
+	if heartbeatStatus != "" && mockResponse["heartbeat_status"] != heartbeatStatus {
+		t.Fatalf("登录阶段样本 mock_response = %+v，期望 heartbeat_status=%s", mockResponse, heartbeatStatus)
+	}
+}
