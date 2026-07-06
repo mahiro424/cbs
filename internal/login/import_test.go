@@ -27,6 +27,8 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 		wantStage        string
 		wantRequestField string
 		wantRequestValue string
+		wantRiskName     string
+		wantRiskCategory string
 	}{
 		{
 			name: "62data 导入登录",
@@ -49,6 +51,8 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 			wantStage:        "load_62data_fixture",
 			wantRequestField: "data62",
 			wantRequestValue: "svc-62-data",
+			wantRiskName:     "sae_encrypt_01",
+			wantRiskCategory: "sae",
 		},
 		{
 			name: "A16 导入登录",
@@ -71,6 +75,8 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 			wantStage:        "load_a16_fixture",
 			wantRequestField: "a16",
 			wantRequestValue: "svc-a16-data",
+			wantRiskName:     "zt_init",
+			wantRiskCategory: "zt",
 		},
 	}
 
@@ -105,6 +111,17 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 			if result.Protocol["pack_kind"] != tc.wantPackKind || result.Protocol["operation"] != tc.wantOperation || result.Protocol["platform"] != tc.wantPlatform {
 				t.Fatalf("protocol = %+v，期望对应平台 Hybrid 摘要", result.Protocol)
 			}
+			risk := result.Risk
+			if risk["status"] != "sample_required" || risk["ready"] != false || risk["platform"] != tc.wantPlatform || risk["login_kind"] != tc.wantLoginKind {
+				t.Fatalf("risk = %+v，期望高风险算法摘要明确样本待补齐", risk)
+			}
+			components := risk["components"].([]map[string]any)
+			if components[0]["name"] != tc.wantRiskName || components[0]["category"] != tc.wantRiskCategory {
+				t.Fatalf("risk.components = %+v，期望首个组件为 %s/%s", components, tc.wantRiskName, tc.wantRiskCategory)
+			}
+			if result.Protocol["risk_algorithms"] == nil {
+				t.Fatalf("protocol = %+v，期望包含 risk_algorithms 摘要", result.Protocol)
+			}
 			if result.Network["mode"] != "mock" || result.Network["operation"] != tc.wantOperation || result.Network["login_kind"] != tc.wantLoginKind || result.Network["platform"] != tc.wantPlatform {
 				t.Fatalf("network = %+v，期望 mock 导入网络摘要", result.Network)
 			}
@@ -125,7 +142,7 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 			if err != nil || !ok {
 				t.Fatalf("按 wxid 读取登录态 = %+v / %v / %v，期望业务层已保存", stored, ok, err)
 			}
-			if stored.UUID != result.UUID || stored.Protocol["pack_kind"] != tc.wantPackKind {
+			if stored.UUID != result.UUID || stored.Protocol["pack_kind"] != tc.wantPackKind || stored.Protocol["risk_algorithms"] == nil {
 				t.Fatalf("按 wxid 读取登录态 = %+v，期望包含同一 uuid 与协议摘要", stored)
 			}
 
@@ -137,7 +154,7 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 			if err := json.Unmarshal(raw, &sample); err != nil {
 				t.Fatalf("样本不是 JSON：%v", err)
 			}
-			for _, key := range []string{"request", "protocol", "network", "mock_response", "login_state"} {
+			for _, key := range []string{"request", "protocol", "network", "risk_algorithms", "mock_response", "login_state"} {
 				if _, ok := sample[key]; !ok {
 					t.Fatalf("样本缺少字段 %s：%+v", key, sample)
 				}
@@ -152,7 +169,7 @@ func TestServiceImportsLoginMaterialBuildMockContextSampleAndWxidState(t *testin
 			}
 
 			responseData := result.ResponseData()
-			for _, key := range []string{"mode", "uuid", "cache_key", "device_id", "device_name", "type", "protocol", "network", "login_state", "sample_path", "stages", "status", "wxid"} {
+			for _, key := range []string{"mode", "uuid", "cache_key", "device_id", "device_name", "type", "protocol", "network", "risk_algorithms", "login_state", "sample_path", "stages", "status", "wxid"} {
 				if _, ok := responseData[key]; !ok {
 					t.Fatalf("响应缺少字段 %s：%+v", key, responseData)
 				}

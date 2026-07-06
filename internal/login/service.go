@@ -14,6 +14,7 @@ import (
 
 	"github.com/mahiro424/cbs/internal/network"
 	protocolpkg "github.com/mahiro424/cbs/internal/protocol"
+	"github.com/mahiro424/cbs/internal/riskalgo"
 	"github.com/mahiro424/cbs/internal/storage"
 )
 
@@ -26,6 +27,7 @@ var (
 	ErrWxidLoginStateNotFound = errors.New("wxid login state not found")
 	ErrUnsupportedLoginKind   = errors.New("unsupported login kind")
 	ErrSessionLoggedOut       = errors.New("session logged out")
+	ErrRiskPlan               = errors.New("login risk algorithm plan failed")
 )
 
 type Dependencies struct {
@@ -33,6 +35,7 @@ type Dependencies struct {
 	Network   network.Client
 	SampleDir string
 	Now       func() time.Time
+	Risk      riskalgo.Planner
 }
 
 type Service struct {
@@ -40,6 +43,7 @@ type Service struct {
 	network   network.Client
 	sampleDir string
 	now       func() time.Time
+	risk      riskalgo.Planner
 }
 
 func NewService(deps Dependencies) *Service {
@@ -55,11 +59,16 @@ func NewService(deps Dependencies) *Service {
 	if netClient == nil {
 		netClient, _, _ = network.NewClient(network.Config{})
 	}
+	riskPlanner := deps.Risk
+	if riskPlanner == nil {
+		riskPlanner = riskalgo.DefaultPlanner{}
+	}
 	return &Service{
 		states:    states,
 		network:   netClient,
 		sampleDir: deps.SampleDir,
 		now:       now,
+		risk:      riskPlanner,
 	}
 }
 
@@ -194,6 +203,7 @@ type ImportResult struct {
 	LoginKind    string
 	Protocol     map[string]any
 	Network      map[string]any
+	Risk         map[string]any
 	State        storage.LoginState
 	SamplePath   string
 	MockResponse map[string]any
@@ -312,17 +322,18 @@ func (r LogOutResult) ResponseData() map[string]any {
 
 func (r ImportResult) ResponseData() map[string]any {
 	data := map[string]any{
-		"mode":        r.Mode,
-		"uuid":        r.UUID,
-		"cache_key":   r.CacheKey,
-		"device_id":   r.DeviceID,
-		"device_name": r.DeviceName,
-		"type":        r.Type,
-		"protocol":    r.Protocol,
-		"network":     r.Network,
-		"login_state": r.State.ToMap(),
-		"sample_path": r.SamplePath,
-		"stages":      r.Stages,
+		"mode":            r.Mode,
+		"uuid":            r.UUID,
+		"cache_key":       r.CacheKey,
+		"device_id":       r.DeviceID,
+		"device_name":     r.DeviceName,
+		"type":            r.Type,
+		"protocol":        r.Protocol,
+		"network":         r.Network,
+		"risk_algorithms": r.Risk,
+		"login_state":     r.State.ToMap(),
+		"sample_path":     r.SamplePath,
+		"stages":          r.Stages,
 	}
 	for key, value := range r.MockResponse {
 		data[key] = value
@@ -926,6 +937,18 @@ func (s *Service) importMock(ctx context.Context, spec importSpec) (ImportResult
 		return ImportResult{}, fmt.Errorf("%w: %v", ErrProtocolPack, err)
 	}
 	protocol := protocolTraceFromHybrid(hybrid, spec.LoginKind)
+	riskPlan, err := s.risk.BuildLoginRiskPlan(riskalgo.LoginRiskRequest{
+		Operation: operation,
+		Platform:  spec.Platform,
+		LoginKind: spec.LoginKind,
+		DeviceID:  spec.DeviceID,
+		Wxid:      spec.Wxid,
+	})
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("%w: %v", ErrRiskPlan, err)
+	}
+	risk := riskPlan.ToMap()
+	protocol["risk_algorithms"] = risk
 	networkTrace, err := s.sendNetwork(ctx, operation, spec.LoginKind, hybrid.Platform, hybrid, map[string]string{
 		"device_id": spec.DeviceID,
 		"type":      spec.Type,
@@ -961,11 +984,12 @@ func (s *Service) importMock(ctx context.Context, spec importSpec) (ImportResult
 	}
 	state.SamplePath = samplePath
 	sample := map[string]any{
-		"request":       spec.Request,
-		"protocol":      protocol,
-		"network":       networkTrace,
-		"mock_response": mockResponse,
-		"login_state":   state.ToMap(),
+		"request":         spec.Request,
+		"protocol":        protocol,
+		"network":         networkTrace,
+		"risk_algorithms": risk,
+		"mock_response":   mockResponse,
+		"login_state":     state.ToMap(),
 	}
 	if err := writeSample(samplePath, sample); err != nil {
 		return ImportResult{}, fmt.Errorf("%w: %v", ErrSampleWrite, err)
@@ -984,6 +1008,7 @@ func (s *Service) importMock(ctx context.Context, spec importSpec) (ImportResult
 		LoginKind:    spec.LoginKind,
 		Protocol:     protocol,
 		Network:      networkTrace,
+		Risk:         risk,
 		State:        state,
 		SamplePath:   samplePath,
 		MockResponse: mockResponse,

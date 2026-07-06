@@ -175,6 +175,8 @@ func (s *Server) writeLoginServiceError(w http.ResponseWriter, requestID string,
 		s.write(w, http.StatusOK, Envelope{Success: false, Code: "unsupported_login_kind", Message: "当前 uuid 不是二维码登录态", RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrProtocolPack):
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "protocol_pack_error", Message: err.Error(), RequestID: requestID})
+	case errors.Is(err, loginpkg.ErrRiskPlan):
+		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "risk_algorithm_plan_error", Message: err.Error(), RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrSamplePath):
 		s.write(w, http.StatusInternalServerError, Envelope{Success: false, Code: "sample_path_error", Message: err.Error(), RequestID: requestID})
 	case errors.Is(err, loginpkg.ErrSampleWrite):
