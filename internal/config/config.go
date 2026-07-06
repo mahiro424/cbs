@@ -27,6 +27,7 @@ type Config struct {
 	ServerName      string
 	LongLinkEnabled bool
 	SampleDir       string
+	LoginStateStore string
 }
 
 // Default 返回原服务常见默认值，确保缺少配置文件时仍可启动。
@@ -49,6 +50,7 @@ func Default() Config {
 		ServerName:      "wxapi",
 		LongLinkEnabled: true,
 		SampleDir:       ".scratch/samples",
+		LoginStateStore: "memory",
 	}
 }
 
@@ -140,6 +142,8 @@ func apply(c *Config, key, value string) {
 		c.LongLinkEnabled = parseBool(value)
 	case "sampledir":
 		c.SampleDir = value
+	case "loginstatestore", "login_state_store":
+		c.LoginStateStore = strings.ToLower(strings.TrimSpace(value))
 	}
 }
 

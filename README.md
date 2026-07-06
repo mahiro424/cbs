@@ -26,6 +26,17 @@ go test ./...
 go run ./cmd/server -config conf/app.conf
 ```
 
+登录态存储默认使用进程内 `memory`，不依赖本机 Redis 即可跑通 mock-first 链路。需要验证 Redis 登录态接缝时，在 `conf/app.conf` 中显式设置：
+
+```text
+loginstatestore = redis
+redislink = 127.0.0.1:6379
+redispass = ""
+redisdbnum = 7
+```
+
+`/healthz` 会输出 `login_state_store.mode`，用于确认当前运行时使用的是 `memory` 还是 `redis`。Redis 模式下，登录态会写入 `login:state:<uuid>`，并维护 `cache_key` 与 `wxid` 索引；Redis 不可用时，相关登录态保存/读取接口会返回统一 `login_state_store_error`。
+
 ## 编码治理
 
 仓库默认使用 UTF-8。若需要处理父级 `F:\yanjiu` 中的历史 GBK/GB18030 文本，先预演、再转换、最后检查：
@@ -90,7 +101,7 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/LogOut?wxid=<wxid>' 
 1. 解析设备请求。
 2. 生成 Hybrid ECDH iOS 协议占位摘要。
 3. 生成 mock 二维码响应。
-4. 保存内存登录态。
+4. 保存到配置选择的登录态存储（默认 `memory`，可切换到 `redis`）。
 5. 将请求、协议占位、mock 响应和登录态摘要落盘为 JSON 样本。
 6. 返回 `uuid`、`cache_key`、`protocol`、`login_state` 和 `sample_path`。
 
@@ -135,7 +146,7 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 - Redis 不可连接会返回可用 `errors.Is(err, storage.ErrRedisUnavailable)` 判断的稳定错误，Redis 返回 `-ERR` / `-NOAUTH` 会返回可用 `errors.Is(err, storage.ErrRedisCommandFailed)` 判断的稳定错误；
 - Redis backend 测试使用进程内 fake Redis 夹具，不依赖真实 Redis 实例。
 
-当前 HTTP 默认仍使用 `MemoryLoginStateStore`，Redis backend 已可在 storage 层独立测试；后续切片再接入配置化切换与真实运行环境验证。
+当前 HTTP 默认仍使用 `MemoryLoginStateStore`，但可通过 `loginstatestore = redis` 切换为 `RedisLoginStateStore`。Redis 模式已覆盖跨 Server 实例读写测试：一个 Server 写入 `/Login/62data` 登录态后，另一个 Server 可以通过 `/Login/Newinit` 和 `/Login/GetCacheInfo` 读回并更新同一 Redis 登录态。
 
 ## 当前协议封包 mock 帧
 

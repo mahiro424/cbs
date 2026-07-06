@@ -25,11 +25,14 @@ type Server struct {
 	routes    map[string]Route
 	pathIndex map[string]struct{}
 	states    storage.LoginStateStore
+	stateMode string
+	stateErr  error
 	seq       atomic.Uint64
 }
 
 func NewServer(cfg config.Config) *Server {
-	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: storage.NewMemoryLoginStateStore()}
+	states, stateMode, stateErr := storage.NewLoginStateStoreFromConfig(cfg)
+	s := &Server{cfg: cfg, routes: make(map[string]Route), pathIndex: make(map[string]struct{}), states: states, stateMode: stateMode, stateErr: stateErr}
 	for _, route := range AllRoutes() {
 		method := strings.ToUpper(route.Method)
 		route.Method = method
@@ -43,12 +46,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := s.requestID(r)
 	if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
 		s.write(w, http.StatusOK, Envelope{Success: true, Code: "ok", Message: "服务正常", RequestID: requestID, Data: map[string]any{
-			"app":     s.cfg.AppName,
-			"listen":  s.cfg.ListenAddress(),
-			"redis":   storage.CheckRedis(context.Background(), s.cfg),
-			"routes":  len(AllRoutes()),
-			"mode":    "mock-first",
-			"version": "0.1.0",
+			"app":               s.cfg.AppName,
+			"listen":            s.cfg.ListenAddress(),
+			"redis":             storage.CheckRedis(context.Background(), s.cfg),
+			"login_state_store": s.loginStateStoreSummary(),
+			"routes":            len(AllRoutes()),
+			"mode":              "mock-first",
+			"version":           "0.1.0",
 		}})
 		return
 	}
@@ -117,6 +121,19 @@ func (s *Server) write(w http.ResponseWriter, status int, body Envelope) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+func (s *Server) loginStateStoreSummary() map[string]any {
+	summary := map[string]any{
+		"mode": s.stateMode,
+	}
+	if s.stateErr != nil {
+		summary["available"] = false
+		summary["message"] = s.stateErr.Error()
+		return summary
+	}
+	summary["available"] = true
+	return summary
 }
 
 func (s *Server) writeLoginStateStoreError(w http.ResponseWriter, requestID string, err error) {
