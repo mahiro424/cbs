@@ -11,6 +11,7 @@
 - 未实现接口返回统一 `not_implemented` JSON 响应。
 - `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 提供 mock 链路，并输出协议占位、登录态和样本路径。
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
+- 提供 `internal/protocol` mock-first Pack / Unpack 样本入口，用于后续真实协议对拍替换。
 
 ## 运行
 
@@ -97,3 +98,34 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 ```text
 .scratch/samples
 ```
+
+## 当前协议封包 mock 帧
+
+`internal/protocol` 当前提供的是 mock-first 协议帧，不是最终真实微信 `Pack` / `UnpackBusinessPacket` 协议。它的目标是先固定一个可测试、可落盘、可检测损坏数据的协议边界，后续真实协议还原时在同一模块内逐步替换。
+
+当前帧结构：
+
+```text
+magic(4) = CBS1
+version(1)
+flags(1)
+operation_length(2, big-endian)
+payload_length(4, big-endian)
+payload_crc32(4, big-endian)
+operation bytes
+payload bytes
+```
+
+可单独运行协议样本测试：
+
+```powershell
+go test ./internal/protocol -count=1
+```
+
+测试覆盖：
+
+- Pack 输出稳定十六进制帧；
+- Unpack 还原 `operation`、`payload`、`flags`；
+- hex 输入输出往返；
+- 样本 JSON 落盘，包含 `request`、`packed`、`unpacked`、`debug`；
+- magic、长度和 CRC 损坏时返回稳定错误。
