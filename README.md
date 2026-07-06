@@ -11,7 +11,7 @@
 - 未实现接口返回统一 `not_implemented` JSON 响应。
 - `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 提供 mock 链路，并输出协议占位、登录态和样本路径。
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
-- 提供 `internal/protocol` mock-first Pack / Unpack 与 Hybrid ECDH iOS / Android 样本入口，用于后续真实协议对拍替换。
+- 提供 `internal/protocol` mock-first Pack / Unpack、Hybrid ECDH iOS / Android、AES-GCM 解包和二进制调试入口，用于后续真实协议对拍替换。
 
 ## 运行
 
@@ -186,4 +186,39 @@ go test ./internal/protocol -run Hybrid -count=1
 
 ```powershell
 go test ./internal/protocol -run AESGCM -count=1
+```
+
+## 协议二进制调试工具
+
+`cmd/protocol-debug` 是当前 mock-first 协议帧的本地调试入口，不需要启动 HTTP 服务，也不会访问真实网络。它用于快速 inspect 十六进制封包样本，并对 expected / actual 两个样本做字节级 compare。
+
+Inspect 示例：
+
+```powershell
+go run .\cmd\protocol-debug inspect --hex 434253310103000b00000013c463dfb64d73672e53656e6454787468656c6c6f206d6f636b2070726f746f636f6c
+```
+
+输出包含：
+
+- `status`、`hex`、`length`；
+- `packet.operation`、`packet.payload_utf8`、`packet.payload_hex`、`packet.flags`；
+- `debug.magic`、`debug.version`、长度字段和 `crc32_hex`。
+
+Compare 示例：
+
+```powershell
+go run .\cmd\protocol-debug compare --expected <expected-hex> --actual <actual-hex>
+```
+
+输出包含：
+
+- `equal`：两个样本是否字节完全一致；
+- `first_difference`：首个差异字节的偏移和值；
+- `expected` / `actual`：双方各自的 inspect 摘要；
+- `status=skipped` 和 `skip_reason`：expected 或 actual 样本缺失时的明确跳过原因。
+
+可单独运行调试工具测试：
+
+```powershell
+go test .\internal\protocol .\internal\protocoldebug -count=1
 ```
