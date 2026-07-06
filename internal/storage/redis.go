@@ -21,7 +21,7 @@ type RedisStatus struct {
 func CheckRedis(ctx context.Context, cfg config.Config) RedisStatus {
 	status := RedisStatus{Address: cfg.RedisLink, Database: cfg.RedisDBNum}
 	if strings.TrimSpace(cfg.RedisLink) == "" {
-		status.Message = "??? Redis ??"
+		status.Message = "未配置 Redis 地址"
 		return status
 	}
 	dialer := net.Dialer{Timeout: 500 * time.Millisecond}
@@ -40,7 +40,7 @@ func CheckRedis(ctx context.Context, cfg config.Config) RedisStatus {
 		}
 		line, _ := reader.ReadString('\n')
 		if !strings.HasPrefix(line, "+OK") {
-			status.Message = "Redis AUTH ???" + strings.TrimSpace(line)
+			status.Message = "Redis AUTH 失败：" + strings.TrimSpace(line)
 			return status
 		}
 	}
@@ -52,7 +52,7 @@ func CheckRedis(ctx context.Context, cfg config.Config) RedisStatus {
 		}
 		line, _ := reader.ReadString('\n')
 		if !strings.HasPrefix(line, "+OK") {
-			status.Message = "Redis SELECT ???" + strings.TrimSpace(line)
+			status.Message = "Redis SELECT 失败：" + strings.TrimSpace(line)
 			return status
 		}
 	}

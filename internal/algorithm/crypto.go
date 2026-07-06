@@ -35,7 +35,7 @@ func AESCBCEncrypt(plain, key, iv []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(iv) != block.BlockSize() {
-		return nil, fmt.Errorf("iv ??? %d??? %d", len(iv), block.BlockSize())
+		return nil, fmt.Errorf("iv 长度为 %d，期望 %d", len(iv), block.BlockSize())
 	}
 	padded := pkcs7Pad(plain, block.BlockSize())
 	out := make([]byte, len(padded))
@@ -49,10 +49,10 @@ func AESCBCDecrypt(ciphertext, key, iv []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(iv) != block.BlockSize() {
-		return nil, fmt.Errorf("iv ??? %d??? %d", len(iv), block.BlockSize())
+		return nil, fmt.Errorf("iv 长度为 %d，期望 %d", len(iv), block.BlockSize())
 	}
 	if len(ciphertext) == 0 || len(ciphertext)%block.BlockSize() != 0 {
-		return nil, errors.New("AES-CBC ??????????????")
+		return nil, errors.New("AES-CBC 密文长度必须是块大小的整数倍")
 	}
 	out := make([]byte, len(ciphertext))
 	cipher.NewCBCDecrypter(block, iv).CryptBlocks(out, ciphertext)
@@ -78,7 +78,7 @@ func AESECBDecrypt(ciphertext, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(ciphertext) == 0 || len(ciphertext)%block.BlockSize() != 0 {
-		return nil, errors.New("AES-ECB ??????????????")
+		return nil, errors.New("AES-ECB 密文长度必须是块大小的整数倍")
 	}
 	out := make([]byte, len(ciphertext))
 	for start := 0; start < len(ciphertext); start += block.BlockSize() {
@@ -97,7 +97,7 @@ func AESGCMEncrypt(plain, key, nonce, aad []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(nonce) != gcm.NonceSize() {
-		return nil, fmt.Errorf("nonce ??? %d??? %d", len(nonce), gcm.NonceSize())
+		return nil, fmt.Errorf("nonce 长度为 %d，期望 %d", len(nonce), gcm.NonceSize())
 	}
 	return gcm.Seal(nil, nonce, plain, aad), nil
 }
@@ -112,7 +112,7 @@ func AESGCMDecrypt(ciphertext, key, nonce, aad []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(nonce) != gcm.NonceSize() {
-		return nil, fmt.Errorf("nonce ??? %d??? %d", len(nonce), gcm.NonceSize())
+		return nil, fmt.Errorf("nonce 长度为 %d，期望 %d", len(nonce), gcm.NonceSize())
 	}
 	return gcm.Open(nil, nonce, ciphertext, aad)
 }
@@ -128,10 +128,10 @@ func HKDFExtractSHA256(salt, ikm []byte) []byte {
 
 func HKDFExpandSHA256(prk, info []byte, length int) ([]byte, error) {
 	if length < 0 {
-		return nil, errors.New("HKDF ????????")
+		return nil, errors.New("HKDF 输出长度不能为负")
 	}
 	if length > 255*sha256.Size {
-		return nil, errors.New("HKDF ??????")
+		return nil, errors.New("HKDF 输出长度过长")
 	}
 	var result []byte
 	var previous []byte
@@ -202,11 +202,11 @@ func (k *ECDHKey) SharedSecret(peerPublic []byte) ([]byte, error) {
 	}
 	x, y := elliptic.Unmarshal(curve, peerPublic)
 	if x == nil || y == nil {
-		return nil, errors.New("??? ECDH ??")
+		return nil, errors.New("无效的 ECDH 公钥")
 	}
 	sx, _ := curve.ScalarMult(x, y, k.PrivateKey)
 	if sx == nil {
-		return nil, errors.New("ECDH ????")
+		return nil, errors.New("ECDH 协商失败")
 	}
 	out := make([]byte, (curve.Params().BitSize+7)/8)
 	return sx.FillBytes(out), nil
@@ -219,7 +219,7 @@ func curveFor(kind CurveKind) (elliptic.Curve, error) {
 	case CurveP224:
 		return elliptic.P224(), nil
 	default:
-		return nil, fmt.Errorf("???????%s", kind)
+		return nil, fmt.Errorf("不支持的曲线：%s", kind)
 	}
 }
 
@@ -230,15 +230,15 @@ func pkcs7Pad(data []byte, blockSize int) []byte {
 
 func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 	if len(data) == 0 || len(data)%blockSize != 0 {
-		return nil, errors.New("PKCS7 ??????")
+		return nil, errors.New("PKCS7 数据长度无效")
 	}
 	padding := int(data[len(data)-1])
 	if padding == 0 || padding > blockSize || padding > len(data) {
-		return nil, errors.New("PKCS7 ????")
+		return nil, errors.New("PKCS7 填充无效")
 	}
 	for _, b := range data[len(data)-padding:] {
 		if int(b) != padding {
-			return nil, errors.New("PKCS7 ??????")
+			return nil, errors.New("PKCS7 填充字节无效")
 		}
 	}
 	return append([]byte{}, data[:len(data)-padding]...), nil
