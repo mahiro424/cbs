@@ -10,13 +10,13 @@
 - 注册现有 Swagger 中的 142 个接口路由。
 - 未实现接口返回统一 `not_implemented` JSON 响应。
 - `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 提供 mock 链路，并输出协议占位、登录态和样本路径。
-- `/Msg/SendTxt`、`/Msg/Sync` 提供文本消息发送与消息同步 mock 链路，并输出消息/同步 ID、协议 Pack 摘要、网络摘要、登录态摘要和样本路径。
+- `/Msg/SendTxt`、`/Msg/Sync`、`/Msg/Revoke` 提供文本消息发送、消息同步与撤回消息 mock 链路，并输出消息/同步/撤回 ID、协议 Pack 摘要、网络摘要、登录态摘要和样本路径。
 - 提供 AES、HKDF、CRC、zlib、ECDH 等基础算法接口和测试。
 - 提供 `internal/protocol` mock-first Pack / Unpack、Hybrid ECDH iOS / Android、AES-GCM 解包和二进制调试入口，用于后续真实协议对拍替换。
 - 提供 `internal/network` mock/real 网络层接缝；默认 mock 不访问真实服务端，real 当前返回稳定未就绪错误。
 - 提供 `internal/riskalgo` 高风险算法待补齐计划边界；Sae、ZT、反垃圾和 CC 数据当前以 `sample_required` 摘要进入登录链路，后续可按样本替换真实实现。
 - 提供 `internal/login` 登录业务层接缝；`/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data`、`/Login/LogOut` 已下沉为业务层 tracer bullet。
-- 提供 `internal/message` 消息业务层接缝；`/Msg/SendTxt`、`/Msg/Sync` 已下沉为高频业务接口 tracer bullet。
+- 提供 `internal/message` 消息业务层接缝；`/Msg/SendTxt`、`/Msg/Sync`、`/Msg/Revoke` 已下沉为高频业务接口 tracer bullet。
 
 ## 运行
 
@@ -125,6 +125,12 @@ Invoke-RestMethod -Method Post http://127.0.0.1:7056/Msg/SendTxt -ContentType 'a
 Invoke-RestMethod -Method Post http://127.0.0.1:7056/Msg/Sync -ContentType 'application/json' -Body '{"Wxid":"<wxid>","Scene":0,"Synckey":""}'
 ```
 
+撤回消息 mock：
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:7056/Msg/Revoke -ContentType 'application/json' -Body '{"Wxid":"<wxid>","ToUserName":"wxid_receiver","NewMsgId":900000000001,"ClientMsgId":700000000002,"CreateTime":1783340000}'
+```
+
 ## 当前登录 mock 链路
 
 `/Login/GetQR`、`/Login/CheckQR`、`/Login/62data`、`/Login/A16Data`、`/Login/Newinit`、`/Login/HeartBeat`、`/Login/Get62Data`、`/Login/GetA16Data` 与 `/Login/LogOut` 当前已经由 HTTP 控制器下沉到 `internal/login` 业务层，会经过可验证的 mock 登录链路：
@@ -164,7 +170,7 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 
 ## 当前消息 mock 链路
 
-`/Msg/SendTxt` 与 `/Msg/Sync` 当前已经由 HTTP 控制器下沉到 `internal/message` 业务层。它们读取发送方 `wxid` 对应的登录态，生成对应 `Msg.*` mock 业务协议帧，通过 `internal/network` 产出 mock 网络摘要，并把请求、协议摘要、网络摘要、mock 响应和登录态上下文落盘为 JSON 样本。
+`/Msg/SendTxt`、`/Msg/Sync` 与 `/Msg/Revoke` 当前已经由 HTTP 控制器下沉到 `internal/message` 业务层。它们读取发送方 `wxid` 对应的登录态，生成对应 `Msg.*` mock 业务协议帧，通过 `internal/network` 产出 mock 网络摘要，并把请求、协议摘要、网络摘要、mock 响应和登录态上下文落盘为 JSON 样本。
 
 `/Msg/SendTxt` 当前返回字段包含：
 
@@ -182,7 +188,15 @@ Invoke-RestMethod -Method Post 'http://127.0.0.1:7056/Login/GetCacheInfo?cache_k
 - `network`：包含 mock 网络阶段、登录类型、平台和 payload 摘要；
 - `login_state`、`sample_path`、`stages`。
 
-该链路用于先固定消息模块的 HTTP → 业务层 → 登录态 → 协议封包 → 网络接缝 → 样本落盘边界；真实微信消息发送与同步仍等待后续协议样本和真实网络模式补齐。
+`/Msg/Revoke` 当前返回字段包含：
+
+- `status=mock_revoked` 与稳定 `revoke_id`；
+- `wxid`、`to_user_name`、`new_msg_id`、`client_msg_id`、`create_time`、`revoked_at`；
+- `protocol`：包含 `pack_kind=business_packet_mock`、`operation=Msg.Revoke`、`packed_hex` 和帧调试摘要；
+- `network`：包含 mock 网络阶段、登录类型、平台和 payload 摘要；
+- `login_state`、`sample_path`、`stages`。
+
+该链路用于先固定消息模块的 HTTP → 业务层 → 登录态 → 协议封包 → 网络接缝 → 样本落盘边界；真实微信消息发送、同步与撤回仍等待后续协议样本和真实网络模式补齐。
 
 可单独运行消息业务层测试：
 
@@ -218,7 +232,7 @@ go test ./internal/message -count=1
 - `real`：当前只固定入口和错误契约，返回可用 `errors.Is(err, network.ErrRealNetworkNotReady)` 判断的稳定错误；后续真实 MMTLS / HTTP 发送会在该模式下替换实现。
 - 非法网络模式会返回可用 `errors.Is(err, network.ErrNetworkConfig)` 判断的稳定配置错误。
 
-当前 `/Login/GetQR`、`/Login/62data`、`/Login/A16Data`、`/Msg/SendTxt` 和 `/Msg/Sync` 已通过该网络接缝产生 `network` 摘要，并写入响应与样本文件。
+当前 `/Login/GetQR`、`/Login/62data`、`/Login/A16Data`、`/Msg/SendTxt`、`/Msg/Sync` 和 `/Msg/Revoke` 已通过该网络接缝产生 `network` 摘要，并写入响应与样本文件。
 
 ## 当前协议封包 mock 帧
 

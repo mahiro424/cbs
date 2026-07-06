@@ -77,6 +77,14 @@ type SyncRequest struct {
 	Synckey string
 }
 
+type RevokeRequest struct {
+	Wxid        string
+	ToUserName  string
+	NewMsgID    int64
+	ClientMsgID int64
+	CreateTime  int64
+}
+
 type SendTextResult struct {
 	Status        string
 	MessageID     string
@@ -102,6 +110,22 @@ type SyncResult struct {
 	SyncKey     string
 	NextSyncKey string
 	SyncedAt    time.Time
+	Protocol    map[string]any
+	Network     map[string]any
+	LoginState  storage.LoginState
+	SamplePath  string
+	Stages      []string
+}
+
+type RevokeResult struct {
+	Status      string
+	RevokeID    string
+	Wxid        string
+	ToUserName  string
+	NewMsgID    int64
+	ClientMsgID int64
+	CreateTime  int64
+	RevokedAt   time.Time
 	Protocol    map[string]any
 	Network     map[string]any
 	LoginState  storage.LoginState
@@ -144,6 +168,24 @@ func (r SyncResult) ResponseData() map[string]any {
 		"login_state":  r.LoginState.ToMap(),
 		"sample_path":  r.SamplePath,
 		"stages":       r.Stages,
+	}
+}
+
+func (r RevokeResult) ResponseData() map[string]any {
+	return map[string]any{
+		"status":        r.Status,
+		"revoke_id":     r.RevokeID,
+		"wxid":          r.Wxid,
+		"to_user_name":  r.ToUserName,
+		"new_msg_id":    r.NewMsgID,
+		"client_msg_id": r.ClientMsgID,
+		"create_time":   r.CreateTime,
+		"revoked_at":    r.RevokedAt.Format(time.RFC3339Nano),
+		"protocol":      r.Protocol,
+		"network":       r.Network,
+		"login_state":   r.LoginState.ToMap(),
+		"sample_path":   r.SamplePath,
+		"stages":        r.Stages,
 	}
 }
 
@@ -251,6 +293,120 @@ func (s *Service) SendText(ctx context.Context, req SendTextRequest) (SendTextRe
 		Network:       networkTrace,
 		LoginState:    state,
 		SamplePath:    samplePath,
+		Stages: []string{
+			"parse_request",
+			"load_wxid_login_state",
+			"business_packet_pack",
+			"mock_network_response",
+			"write_sample",
+		},
+	}, nil
+}
+
+func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error) {
+	wxid := strings.TrimSpace(req.Wxid)
+	toUserName := strings.TrimSpace(req.ToUserName)
+	state, ok, err := s.states.GetByWxid(ctx, wxid)
+	if err != nil {
+		return RevokeResult{}, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
+	if !ok {
+		return RevokeResult{}, fmt.Errorf("%w: %s", ErrLoginStateNotFound, wxid)
+	}
+	if state.SessionState == "logged_out" {
+		return RevokeResult{LoginState: state}, fmt.Errorf("%w: %s", ErrSessionLoggedOut, wxid)
+	}
+	revokedAt := s.now().UTC()
+	revokeID := revokeID(wxid, toUserName, req.NewMsgID, req.ClientMsgID, req.CreateTime, revokedAt)
+	payload := map[string]any{
+		"wxid":          wxid,
+		"to_user_name":  toUserName,
+		"new_msg_id":    req.NewMsgID,
+		"client_msg_id": req.ClientMsgID,
+		"create_time":   req.CreateTime,
+		"revoke_id":     revokeID,
+		"login_uuid":    state.UUID,
+		"revoked_at":    revokedAt.Format(time.RFC3339Nano),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return RevokeResult{}, fmt.Errorf("%w: %v", ErrProtocolPack, err)
+	}
+	packed, debug, err := protocol.PackBusinessPacket(protocol.BusinessPacket{
+		Operation: "Msg.Revoke",
+		Payload:   payloadBytes,
+		Flags:     1,
+	})
+	if err != nil {
+		return RevokeResult{}, fmt.Errorf("%w: %v", ErrProtocolPack, err)
+	}
+	sum := sha256.Sum256(payloadBytes)
+	protocolTrace := map[string]any{
+		"pack_kind":      "business_packet_mock",
+		"operation":      "Msg.Revoke",
+		"payload_sha256": hex.EncodeToString(sum[:]),
+		"payload_length": len(payloadBytes),
+		"packed_hex":     protocol.ToHex(packed),
+		"debug":          debug,
+	}
+	networkResp, err := s.network.Send(ctx, network.Request{
+		Operation: "Msg.Revoke",
+		LoginKind: state.LoginKind,
+		Platform:  messagePlatform(state.Type),
+		Payload:   packed,
+		Metadata: map[string]string{
+			"wxid":         wxid,
+			"to_user_name": toUserName,
+			"revoke_id":    revokeID,
+		},
+	})
+	if err != nil {
+		return RevokeResult{}, fmt.Errorf("%w: %v", ErrNetwork, err)
+	}
+	networkTrace := networkResp.ToMap()
+	samplePath, err := sampleFilePath(s.sampleDir, revokeID)
+	if err != nil {
+		return RevokeResult{}, fmt.Errorf("%w: %v", ErrSamplePath, err)
+	}
+	mockResponse := map[string]any{
+		"status":        "mock_revoked",
+		"revoke_id":     revokeID,
+		"wxid":          wxid,
+		"to_user_name":  toUserName,
+		"new_msg_id":    req.NewMsgID,
+		"client_msg_id": req.ClientMsgID,
+		"create_time":   req.CreateTime,
+		"revoked_at":    revokedAt.Format(time.RFC3339Nano),
+	}
+	sample := map[string]any{
+		"request": map[string]any{
+			"wxid":          wxid,
+			"to_user_name":  toUserName,
+			"new_msg_id":    req.NewMsgID,
+			"client_msg_id": req.ClientMsgID,
+			"create_time":   req.CreateTime,
+		},
+		"protocol":      protocolTrace,
+		"network":       networkTrace,
+		"mock_response": mockResponse,
+		"login_state":   state.ToMap(),
+	}
+	if err := writeSample(samplePath, sample); err != nil {
+		return RevokeResult{}, fmt.Errorf("%w: %v", ErrSampleWrite, err)
+	}
+	return RevokeResult{
+		Status:      "mock_revoked",
+		RevokeID:    revokeID,
+		Wxid:        wxid,
+		ToUserName:  toUserName,
+		NewMsgID:    req.NewMsgID,
+		ClientMsgID: req.ClientMsgID,
+		CreateTime:  req.CreateTime,
+		RevokedAt:   revokedAt,
+		Protocol:    protocolTrace,
+		Network:     networkTrace,
+		LoginState:  state,
+		SamplePath:  samplePath,
 		Stages: []string{
 			"parse_request",
 			"load_wxid_login_state",
@@ -381,6 +537,12 @@ func syncID(wxid string, scene int32, syncKey string, syncedAt time.Time) string
 	seed := strings.Join([]string{wxid, fmt.Sprintf("%d", scene), syncKey, syncedAt.Format(time.RFC3339Nano)}, "|")
 	sum := sha256.Sum256([]byte(seed))
 	return "mock-sync-" + hex.EncodeToString(sum[:])[:24]
+}
+
+func revokeID(wxid, toUserName string, newMsgID, clientMsgID, createTime int64, revokedAt time.Time) string {
+	seed := strings.Join([]string{wxid, toUserName, fmt.Sprintf("%d", newMsgID), fmt.Sprintf("%d", clientMsgID), fmt.Sprintf("%d", createTime), revokedAt.Format(time.RFC3339Nano)}, "|")
+	sum := sha256.Sum256([]byte(seed))
+	return "mock-revoke-" + hex.EncodeToString(sum[:])[:24]
 }
 
 func nextSyncKey(uuid, wxid string, scene int32, syncKey string, syncedAt time.Time) string {

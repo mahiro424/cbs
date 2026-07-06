@@ -44,7 +44,7 @@ func TestUnknownRouteReturnsUnifiedJSON404(t *testing.T) {
 
 func TestImplementedSwaggerRouteReturnsNotImplementedEnvelope(t *testing.T) {
 	h := httpapi.NewServer(config.Default())
-	req := httptest.NewRequest(http.MethodPost, "/Msg/Revoke", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/Msg/SendApp", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
